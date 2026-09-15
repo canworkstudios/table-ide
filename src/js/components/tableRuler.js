@@ -342,45 +342,220 @@ window.tableRuler = (function () {
             if (typeof window.updateSelectionHandles === 'function') {
                 window.updateSelectionHandles();
             }
+            _syncGridChrome(table);
         });
     }
 
-    // ── Click-to-select with optional shift-extend ───────────────────────────
-    // anchorRow/Col is stored on the wrap so shift-click can extend from it.
+    // ── Click-to-select: shift extends, ctrl/cmd adds ─────────────────
+    // Three gestures, matching a spreadsheet header:
+    //   plain click      → replace the selection with this row/column
+    //   shift-click      → extend contiguously from the stored anchor
+    //   ctrl/cmd-click   → add (or remove) this row/column, keeping the rest
+    //
+    // The additive case is what makes discontiguous selections possible, so
+    // "delete rows 2, 5 and 9" is one gesture and one op instead of three.
+    // _rulerRowSet / _rulerColSet is the authoritative set of selected indices;
+    // cells are derived from it, never the other way round, because a merged
+    // cell belongs to several indices at once.
+    //
+    // It is stored on the TABLE, not on the wrap: renderTableRulers throws the
+    // wrap away and rebuilds it on every structural change, so a set kept there
+    // was silently lost the moment you inserted a row — which is exactly when a
+    // multi-selection matters most. The table element survives the rebuild.
+    function _isAdditive(e)  { return !!(e && (e.metaKey || e.ctrlKey)); }
+    function _isExtending(e) { return !!(e && e.shiftKey); }
+
+    // Turn a set of row indices into the cell list, in visual order.
+    function _cellsForRows(mapper, rows) {
+        const cells = [];
+        Array.from(rows).sort((a, b) => a - b).forEach(r => {
+            mapper.getCellsInRow(r).forEach(c => {
+                if (!$(c).hasClass('drag-handle') && cells.indexOf(c) === -1) cells.push(c);
+            });
+        });
+        return cells;
+    }
+
+    function _cellsForCols(mapper, cols) {
+        const cells = [];
+        Array.from(cols).sort((a, b) => a - b).forEach(c => {
+            mapper.getCellsInColumn(c).forEach(cell => {
+                if (!$(cell).hasClass('drag-handle') && cells.indexOf(cell) === -1) cells.push(cell);
+            });
+        });
+        return cells;
+    }
+
     function _handleRulerRowClick($wrap, table, rowIdx, e) {
         const mapper = new window.VisualGridMapper(table);
-        if (e.shiftKey && $wrap[0]._rulerRowAnchor != null) {
-            const from = $wrap[0]._rulerRowAnchor;
+        const w      = table;
+        let rows;
+
+        if (_isExtending(e) && w._rulerRowAnchor != null) {
+            // Extend from the anchor. When the press is also additive the new
+            // band unions with what was already held, which is how a
+            // spreadsheet grows a second block without losing the first.
+            const from = w._rulerRowAnchor;
             const min  = Math.min(from, rowIdx);
             const max  = Math.max(from, rowIdx);
-            const cells = [];
-            for (let r = min; r <= max; r++) {
-                mapper.getCellsInRow(r).forEach(c => { if (!$(c).hasClass('drag-handle')) cells.push(c); });
-            }
-            _applyRulerSelection(table, cells, 'row');
+            rows = _isAdditive(e) ? new Set(w._rulerRowSet || []) : new Set();
+            for (let r = min; r <= max; r++) rows.add(r);
+        } else if (_isAdditive(e)) {
+            rows = new Set(w._rulerRowSet || []);
+            // Toggle: ctrl-clicking a held row releases it. Never empty the
+            // selection entirely — a no-op reads as a dead click.
+            if (rows.has(rowIdx) && rows.size > 1) rows.delete(rowIdx);
+            else                                   rows.add(rowIdx);
+            w._rulerRowAnchor = rowIdx;
         } else {
-            $wrap[0]._rulerRowAnchor = rowIdx;
-            const cells = mapper.getCellsInRow(rowIdx).filter(c => !$(c).hasClass('drag-handle'));
-            _applyRulerSelection(table, cells, 'row');
+            rows = new Set([rowIdx]);
+            w._rulerRowAnchor = rowIdx;
         }
+
+        w._rulerRowSet = rows;
+        w._rulerColSet = null;
+        w._rulerColAnchor = null;
+        _applyRulerSelection(table, _cellsForRows(mapper, rows), 'row');
     }
 
     function _handleRulerColClick($wrap, table, colIdx, e) {
         const mapper = new window.VisualGridMapper(table);
-        if (e.shiftKey && $wrap[0]._rulerColAnchor != null) {
-            const from = $wrap[0]._rulerColAnchor;
+        const w      = table;
+        let cols;
+
+        if (_isExtending(e) && w._rulerColAnchor != null) {
+            const from = w._rulerColAnchor;
             const min  = Math.min(from, colIdx);
             const max  = Math.max(from, colIdx);
-            const cells = [];
-            for (let c = min; c <= max; c++) {
-                mapper.getCellsInColumn(c).forEach(cell => { if (!$(cell).hasClass('drag-handle')) cells.push(cell); });
-            }
-            _applyRulerSelection(table, cells, 'column');
+            cols = _isAdditive(e) ? new Set(w._rulerColSet || []) : new Set();
+            for (let c = min; c <= max; c++) cols.add(c);
+        } else if (_isAdditive(e)) {
+            cols = new Set(w._rulerColSet || []);
+            if (cols.has(colIdx) && cols.size > 1) cols.delete(colIdx);
+            else                                   cols.add(colIdx);
+            w._rulerColAnchor = colIdx;
         } else {
-            $wrap[0]._rulerColAnchor = colIdx;
-            const cells = mapper.getCellsInColumn(colIdx).filter(c => !$(c).hasClass('drag-handle'));
-            _applyRulerSelection(table, cells, 'column');
+            cols = new Set([colIdx]);
+            w._rulerColAnchor = colIdx;
         }
+
+        w._rulerColSet = cols;
+        w._rulerRowSet = null;
+        w._rulerRowAnchor = null;
+        _applyRulerSelection(table, _cellsForCols(mapper, cols), 'column');
+    }
+
+    // ── Drag across segments to select a band ────────────────────────────────
+    // Mirrors drag-select on cells: press arms, movement extends, release ends.
+    // The band is always computed from the ORIGIN index to the segment under the
+    // pointer, so the gesture is reversible and never leaves stranded rows
+    // behind when you drag back past where you started.
+    //
+    // An additive press (ctrl/cmd) sweeps a SECOND band without dropping the
+    // first, which is the only way to build "rows 2-4 plus 8-9" by dragging.
+    function _beginRulerSweep($wrap, table, axis, originIdx, e) {
+        const isRow    = axis === 'row';
+        const selector = isRow ? '.table-ide-row-ruler .ruler-seg'
+                               : '.table-ide-col-ruler .ruler-seg';
+        const attr     = isRow ? 'data-row' : 'data-col';
+        const $segs    = $wrap.find(selector);
+        if ($segs.length < 2) return;
+
+        // Held set at press time: an additive sweep unions onto it, a plain
+        // sweep replaces it.
+        const additive = !!(e && (e.metaKey || e.ctrlKey));
+        const base     = additive
+            ? new Set(isRow ? (table._rulerRowSet || []) : (table._rulerColSet || []))
+            : new Set();
+
+        // Cache segment extents once — reading a rect per mousemove per segment
+        // is the kind of layout thrash that makes a sweep feel heavy.
+        const bounds = [];
+        $segs.each(function () {
+            const idx = parseInt($(this).attr(attr), 10);
+            if (isNaN(idx)) return;
+            const r = this.getBoundingClientRect();
+            // A zero-extent segment is a hidden row/column (filtered out,
+            // collapsed, sp-hidden). It must not swallow the pointer.
+            if ((isRow ? r.height : r.width) === 0) return;
+            bounds.push({ idx, start: isRow ? r.top : r.left, end: isRow ? r.bottom : r.right });
+        });
+        if (!bounds.length) return;
+
+        let lastIdx = originIdx;
+        let swept   = false;
+
+        function idxAt(pos) {
+            for (const b of bounds) {
+                if (pos >= b.start && pos <= b.end) return b.idx;
+            }
+            // Past either end: clamp to the nearest segment so dragging off the
+            // strip keeps extending to the edge rather than freezing.
+            let best = null, bestD = Infinity;
+            for (const b of bounds) {
+                const d = pos < b.start ? b.start - pos : pos - b.end;
+                if (d < bestD) { bestD = d; best = b.idx; }
+            }
+            return best;
+        }
+
+        function onMove(mv) {
+            const idx = idxAt(isRow ? mv.clientY : mv.clientX);
+            if (idx == null || idx === lastIdx) return;
+            lastIdx = idx;
+            swept   = true;
+
+            // Fill the band from the VISIBLE segments only. Filling the raw
+            // integer range would re-select rows/columns that a filter or a
+            // collapsed group deliberately hid, so a sweep across a filtered
+            // grid would silently act on data the user cannot even see.
+            const set = new Set(base);
+            const min = Math.min(originIdx, idx);
+            const max = Math.max(originIdx, idx);
+            bounds.forEach(b => { if (b.idx >= min && b.idx <= max) set.add(b.idx); });
+
+            const mapper = new window.VisualGridMapper(table);
+            if (isRow) {
+                table._rulerRowSet = set;
+                table._rulerColSet = null;
+                _applyRulerSelection(table, _cellsForRows(mapper, set), 'row');
+            } else {
+                table._rulerColSet = set;
+                table._rulerRowSet = null;
+                _applyRulerSelection(table, _cellsForCols(mapper, set), 'column');
+            }
+        }
+
+        function onUp() {
+            $(document).off('.rulersweep');
+            $('body').removeClass('gx-ruler-sweeping');
+            // The anchor stays at the origin so a following shift-click extends
+            // from where the sweep began, not from wherever it happened to end.
+            if (swept) {
+                if (isRow) table._rulerRowAnchor = originIdx;
+                else       table._rulerColAnchor = originIdx;
+            }
+        }
+
+        // Suppress text selection for the duration of the sweep.
+        $('body').addClass('gx-ruler-sweeping');
+        $(document).on('mousemove.rulersweep', onMove)
+                   .on('mouseup.rulersweep', onUp);
+    }
+
+    // A right-click / caret press must not collapse a multi-selection that
+    // already contains the pressed index — that is the whole point of having
+    // built one. Only a press OUTSIDE the held set re-selects.
+    function _preserveOrSelectRow($wrap, table, rowIdx) {
+        const held = table._rulerRowSet;
+        if (held && held.has(rowIdx) && held.size > 1) return;
+        _handleRulerRowClick($wrap, table, rowIdx, {});
+    }
+
+    function _preserveOrSelectCol($wrap, table, colIdx) {
+        const held = table._rulerColSet;
+        if (held && held.has(colIdx) && held.size > 1) return;
+        _handleRulerColClick($wrap, table, colIdx, {});
     }
 
     // ── Move row by visual index (insertBefore = target position 0..N) ────────
@@ -631,11 +806,55 @@ window.tableRuler = (function () {
 
     // Open the caret menu for one row/column. Selecting the segment first is what
     // makes the shared ops (which all read window.selectedCells) act on it.
+    // Two entry points, one menu. The caret opens it anchored beneath itself;
+    // a right-click anywhere on the segment opens it at the pointer. Both go
+    // through _buildHeaderMenu so the items, the ops and the close/Escape
+    // wiring are defined exactly once.
     function _openHeaderMenu($wrap, table, axis, idx, anchorEl) {
+        const $menu = _buildHeaderMenu($wrap, table, axis, idx);
+        $(anchorEl).addClass('is-open');
+        const r = anchorEl.getBoundingClientRect();
+        _placeHeaderMenu($menu, r.left, r.bottom + 2, r.top - 2);
+        _armHeaderMenuDismiss();
+    }
+
+    // Right-click entry: the menu opens where the pointer is.
+    function _openHeaderMenuAt($wrap, table, axis, idx, x, y) {
+        const $menu = _buildHeaderMenu($wrap, table, axis, idx);
+        _placeHeaderMenu($menu, x, y, y);
+        _armHeaderMenuDismiss();
+    }
+
+    // Keep the menu inside the viewport; flip above the origin if it would
+    // overflow the bottom. flipTop is the y to sit ABOVE when flipping.
+    function _placeHeaderMenu($menu, x, yBelow, flipTop) {
+        const mw = $menu.outerWidth();
+        const mh = $menu.outerHeight();
+        let left = x;
+        let top  = yBelow;
+        if (left + mw + 8 > window.innerWidth)  left = Math.max(8, window.innerWidth - mw - 8);
+        if (top + mh + 8 > window.innerHeight)  top  = Math.max(8, flipTop - mh);
+        $menu.css({ left: left + 'px', top: top + 'px' });
+    }
+
+    function _armHeaderMenuDismiss() {
+        // Defer so the mousedown/contextmenu that opened the menu does not
+        // immediately close it.
+        setTimeout(() => {
+            $(document).on('mousedown.tafnehdrmenu', function (ev) {
+                if (!$(ev.target).closest('#tableIdeHeaderMenu').length) _closeHeaderMenu();
+            });
+            $(document).on('keydown.tafnehdrmenu', function (ev) {
+                if (ev.key === 'Escape') _closeHeaderMenu();
+            });
+        }, 0);
+    }
+
+    function _buildHeaderMenu($wrap, table, axis, idx) {
         _closeHeaderMenu();
         window.currentTable = table;
-        if (axis === 'row') _handleRulerRowClick($wrap, table, idx, { shiftKey: false });
-        else                _handleRulerColClick($wrap, table, idx, { shiftKey: false });
+        if (axis === 'row') _preserveOrSelectRow($wrap, table, idx);
+        else                _preserveOrSelectCol($wrap, table, idx);
 
         const items = axis === 'row' ? ROW_MENU : COL_MENU;
         const $menu = $('<div id="tableIdeHeaderMenu" class="table-ide-hdr-menu"></div>');
@@ -657,43 +876,288 @@ window.tableRuler = (function () {
         });
 
         $('body').append($menu);
-        $(anchorEl).addClass('is-open');
+        return $menu;
+    }
 
-        // Anchor below the caret, flipped back inside the viewport when it would overflow.
-        const r = anchorEl.getBoundingClientRect();
-        const mw = $menu.outerWidth();
-        const mh = $menu.outerHeight();
-        let left = r.left;
-        let top  = r.bottom + 2;
-        if (left + mw + 8 > window.innerWidth)  left = Math.max(8, window.innerWidth - mw - 8);
-        if (top + mh + 8 > window.innerHeight)  top  = Math.max(8, r.top - mh - 2);
-        $menu.css({ left: left + 'px', top: top + 'px' });
+    // ══════════════════════════════════════════════════════════════════════════
+    // GRID CHROME — the Supabase-style toolbar + footer around the viewport
+    // ══════════════════════════════════════════════════════════════════════════
+    //
+    // Search, filter and sort are VIEW state, never document state: they hide
+    // and reorder rows in the DOM but write nothing the exporter would pick up,
+    // and clearing them restores the document exactly. That is the only way
+    // this can sit on top of an arbitrary extracted table — whatever shape the
+    // grid is, it is still rows and columns, so a row predicate always applies.
+    //
+    // Row order is restored from _gxGridOrder, captured once per table before
+    // the first sort, so "no sort" is a real state and not an approximation.
 
-        // Defer so the mousedown that opened the menu does not immediately close it.
-        setTimeout(() => {
-            $(document).on('mousedown.tafnehdrmenu', function (ev) {
-                if (!$(ev.target).closest('#tableIdeHeaderMenu').length) _closeHeaderMenu();
+    const GRID_HIDDEN_CLASS = 'gx-grid-filtered-out';
+
+    // Body rows only — a <thead> row is a header, not data, and the drag/drop
+    // scaffolding rows are not rows at all.
+    function _gridBodyRows(table) {
+        return Array.from(table.rows).filter(r =>
+            !r.classList.contains('table-ide-drag-row') &&
+            !r.classList.contains('drop-indicator-row') &&
+            !(r.parentNode && r.parentNode.tagName === 'THEAD')
+        );
+    }
+
+    function _gridState(table) {
+        if (!table._gxGridState) {
+            table._gxGridState = { q: '', filters: [], sorts: [] };
+        }
+        return table._gxGridState;
+    }
+
+    function _rowText(row) {
+        return (row.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    // Build a row -> (colIdx -> text) reader ONCE per view pass.
+    //
+    // Reading through the mapper is what makes a colspan/rowspan grid resolve to
+    // the same column the ruler labels, rather than to row.cells[colIdx] which
+    // shifts under every merge. But constructing a mapper is a full grid walk,
+    // so doing it per cell made a search keystroke O(rows x filters) walks; on
+    // an extracted table of any size that is visibly slow. One mapper per pass.
+    function _gridReader(table) {
+        const m    = new window.VisualGridMapper(table);
+        const body = _gridBodyRows(table);
+        // Body rows start after the header rows the mapper also counts.
+        const offset = m.maxRows - body.length;
+        const rowOf  = new Map();
+        body.forEach((r, i) => rowOf.set(r, i + offset));
+        return function (row, colIdx) {
+            const gr = rowOf.get(row);
+            if (gr == null) return '';
+            const gc = m.grid[gr] && m.grid[gr][colIdx];
+            return gc && gc.element ? (gc.element.textContent || '').trim() : '';
+        };
+    }
+
+    const _FILTER_OPS = {
+        contains:  (v, t) => v.toLowerCase().includes(t.toLowerCase()),
+        equals:    (v, t) => v.trim().toLowerCase() === t.trim().toLowerCase(),
+        'not empty': v => v.trim() !== '',
+        empty:     v => v.trim() === '',
+        '>':       (v, t) => parseFloat(v) >  parseFloat(t),
+        '<':       (v, t) => parseFloat(v) <  parseFloat(t)
+    };
+
+    // Apply search + filters (visibility) and sorts (order) to the live DOM.
+    function _applyGridView(table) {
+        const st   = _gridState(table);
+        const rows = _gridBodyRows(table);
+        const read = _gridReader(table);
+
+        // ── Visibility ──
+        let hidden = 0;
+        rows.forEach(r => {
+            let show = true;
+            if (st.q && !_rowText(r).includes(st.q)) show = false;
+            if (show) {
+                for (const f of st.filters) {
+                    const fn = _FILTER_OPS[f.op];
+                    if (!fn) continue;
+                    if (!fn(read(r, f.col), f.value)) { show = false; break; }
+                }
+            }
+            r.classList.toggle(GRID_HIDDEN_CLASS, !show);
+            if (!show) hidden++;
+        });
+
+        // ── Order ──
+        if (st.sorts.length) {
+            if (!table._gxGridOrder) table._gxGridOrder = rows.slice();
+            const parent = rows[0] && rows[0].parentNode;
+            if (parent) {
+                const sorted = rows.slice().sort((a, b) => {
+                    for (const srt of st.sorts) {
+                        const av = read(a, srt.col);
+                        const bv = read(b, srt.col);
+                        const an = parseFloat(av), bn = parseFloat(bv);
+                        let cmp;
+                        // Numeric when BOTH sides are numeric, else locale text.
+                        // Mixed columns are the norm in extracted tables, so a
+                        // blind numeric compare would scatter the text rows.
+                        if (!isNaN(an) && !isNaN(bn) && av.trim() !== '' && bv.trim() !== '') {
+                            cmp = an - bn;
+                        } else {
+                            cmp = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
+                        }
+                        if (cmp) return srt.dir === 'desc' ? -cmp : cmp;
+                    }
+                    return 0;
+                });
+                sorted.forEach(r => parent.appendChild(r));
+            }
+        } else if (table._gxGridOrder) {
+            const parent = table._gxGridOrder[0] && table._gxGridOrder[0].parentNode;
+            if (parent) table._gxGridOrder.forEach(r => { if (r.parentNode === parent) parent.appendChild(r); });
+        }
+
+        _syncGridChrome(table, hidden);
+        scheduleGeometrySync(table);
+    }
+
+    // Footer counters + the filter/sort badge counts.
+    function _syncGridChrome(table, hiddenCount) {
+        const $wrap = $(table).closest('.table-ide-ruler-wrap');
+        if (!$wrap.length) return;
+        const st    = _gridState(table);
+        const rows  = _gridBodyRows(table);
+        const total = rows.length;
+        if (hiddenCount == null) hiddenCount = rows.filter(r => r.classList.contains(GRID_HIDDEN_CLASS)).length;
+        const shown = total - hiddenCount;
+        const m     = new window.VisualGridMapper(table);
+
+        const label = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+        $wrap.find('[data-gx-stat="rows"]').text(
+            hiddenCount ? `${shown} of ${label(total, 'row', 'rows')}` : label(total, 'row', 'rows')
+        );
+        $wrap.find('[data-gx-stat="cols"]').text(label(m.maxCols, 'column', 'columns'));
+
+        const selN = (window.selectedCells || []).filter(c => $.contains(table, c)).length;
+        $wrap.find('[data-gx-stat="sel"]')
+             .text(label(selN, 'cell selected', 'cells selected'))
+             .prop('hidden', selN < 2);
+        $wrap.find('[data-gx-stat="hidden"]')
+             .text(`${hiddenCount} hidden by view`)
+             .prop('hidden', hiddenCount === 0);
+
+        const badge = (sel, n) => $wrap.find(`[data-gx-grid="${sel}"] .table-ide-grid-count`)
+                                       .text(n).prop('hidden', n === 0);
+        badge('filter', st.filters.length);
+        badge('sort',   st.sorts.length);
+        $wrap.find('[data-gx-grid="filter"]').toggleClass('is-active', st.filters.length > 0);
+        $wrap.find('[data-gx-grid="sort"]').toggleClass('is-active',   st.sorts.length > 0);
+    }
+
+    function _closeGridPopover() {
+        $('#tableIdeGridPopover').remove();
+        $('[data-gx-grid]').attr('aria-expanded', 'false').removeClass('is-open');
+        $(document).off('.gxgridpop');
+    }
+
+    // One popover shape for both filter and sort: a list of active clauses, each
+    // removable, plus an "add" row. Supabase's pattern, and it keeps multi-column
+    // sort/filter expressible without a dialog.
+    function _openGridPopover(table, kind, anchorEl) {
+        const wasOpen = $(anchorEl).hasClass('is-open');
+        _closeGridPopover();
+        if (wasOpen) return;
+
+        const st = _gridState(table);
+        const m  = new window.VisualGridMapper(table);
+        const $pop = $('<div id="tableIdeGridPopover" class="table-ide-grid-pop"></div>');
+        const list = kind === 'filter' ? st.filters : st.sorts;
+
+        const colOptions = () => Array.from({ length: m.maxCols }, (_, i) =>
+            `<option value="${i}">${colLabel(i)}</option>`).join('');
+
+        function redraw() {
+            $pop.empty();
+            $pop.append(`<div class="table-ide-grid-pop-head">${kind === 'filter' ? 'Filters' : 'Sort'}</div>`);
+
+            if (!list.length) {
+                $pop.append(`<div class="table-ide-grid-pop-empty">No ${kind === 'filter' ? 'filters' : 'sorts'} applied to this table</div>`);
+            }
+
+            list.forEach((clause, i) => {
+                const $row = $('<div class="table-ide-grid-pop-row"></div>');
+                const $col = $(`<select class="table-ide-grid-pop-sel">${colOptions()}</select>`).val(String(clause.col));
+                $col.on('change', function () { clause.col = parseInt(this.value, 10); _applyGridView(table); });
+                $row.append($col);
+
+                if (kind === 'filter') {
+                    const $op = $('<select class="table-ide-grid-pop-sel"></select>');
+                    Object.keys(_FILTER_OPS).forEach(o => $op.append(`<option value="${o}">${o}</option>`));
+                    $op.val(clause.op).on('change', function () {
+                        clause.op = this.value;
+                        redraw();
+                        _applyGridView(table);
+                    });
+                    $row.append($op);
+                    // "empty"/"not empty" take no operand, so no dead input is shown.
+                    if (clause.op !== 'empty' && clause.op !== 'not empty') {
+                        const $val = $('<input type="text" class="table-ide-grid-pop-val" placeholder="value">').val(clause.value || '');
+                        $val.on('input', function () { clause.value = this.value; _applyGridView(table); });
+                        $row.append($val);
+                    }
+                } else {
+                    const $dir = $('<select class="table-ide-grid-pop-sel"><option value="asc">ascending</option><option value="desc">descending</option></select>');
+                    $dir.val(clause.dir).on('change', function () { clause.dir = this.value; _applyGridView(table); });
+                    $row.append($dir);
+                }
+
+                $('<button type="button" class="table-ide-grid-pop-del" title="Remove">\u00d7</button>')
+                    .on('click', function () { list.splice(i, 1); redraw(); _applyGridView(table); })
+                    .appendTo($row);
+                $pop.append($row);
             });
-            $(document).on('keydown.tafnehdrmenu', function (ev) {
-                if (ev.key === 'Escape') _closeHeaderMenu();
+
+            $('<button type="button" class="table-ide-grid-pop-add"></button>')
+                .text(kind === 'filter' ? '+ Add filter' : '+ Add sort')
+                .on('click', function () {
+                    list.push(kind === 'filter'
+                        ? { col: 0, op: 'contains', value: '' }
+                        : { col: 0, dir: 'asc' });
+                    redraw();
+                    _applyGridView(table);
+                })
+                .appendTo($pop);
+
+            if (list.length) {
+                $('<button type="button" class="table-ide-grid-pop-clear"></button>')
+                    .text('Clear all')
+                    .on('click', function () { list.length = 0; redraw(); _applyGridView(table); })
+                    .appendTo($pop);
+            }
+        }
+
+        redraw();
+        $('body').append($pop);
+        $(anchorEl).addClass('is-open').attr('aria-expanded', 'true');
+
+        const r  = anchorEl.getBoundingClientRect();
+        const pw = $pop.outerWidth(), ph = $pop.outerHeight();
+        let left = r.left, top = r.bottom + 4;
+        if (left + pw + 8 > window.innerWidth)  left = Math.max(8, window.innerWidth - pw - 8);
+        if (top  + ph + 8 > window.innerHeight) top  = Math.max(8, r.top - ph - 4);
+        $pop.css({ left: left + 'px', top: top + 'px' });
+
+        setTimeout(() => {
+            $(document).on('mousedown.gxgridpop', function (ev) {
+                if (!$(ev.target).closest('#tableIdeGridPopover, [data-gx-grid]').length) _closeGridPopover();
+            });
+            $(document).on('keydown.gxgridpop', function (ev) {
+                if (ev.key === 'Escape') _closeGridPopover();
             });
         }, 0);
     }
 
-    // ── Show the cell context menu at a given viewport position ──────────────
-    function _showContextMenuAt(x, y) {
-        const $menu = $('#cellContextMenu');
-        if (!$menu.length) return;
-        $menu.show();
-        const menuW = $menu.outerWidth();
-        const menuH = $menu.outerHeight();
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const pad = 8;
-        if (x + menuW + pad > vw) x = Math.max(pad, x - menuW);
-        if (y + menuH + pad > vh) y = Math.max(pad, vh - menuH - pad);
-        if (y < pad) y = pad;
-        $menu.css({ top: y + 'px', left: x + 'px', display: 'grid', position: 'fixed' });
+    function _wireGridChrome($wrap, table) {
+        $wrap.find('.table-ide-grid-search-input').on('input.gxgrid', function () {
+            _gridState(table).q = this.value.trim().toLowerCase();
+            _applyGridView(table);
+        });
+
+        $wrap.find('[data-gx-grid]').on('click.gxgrid', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.currentTable = table;
+            _openGridPopover(table, $(this).attr('data-gx-grid'), this);
+        });
+
+        // Restore the toolbar from state that survived a ruler rebuild — the
+        // wrap is thrown away and rebuilt on every structural change, so the
+        // inputs have to be re-seeded or the view would silently disagree with
+        // the rows it is still filtering.
+        const st = _gridState(table);
+        if (st.q) $wrap.find('.table-ide-grid-search-input').val(st.q);
+        _applyGridView(table);
     }
 
     // ── Build and inject ruler strips around a table ──────────────────────────
@@ -731,14 +1195,14 @@ window.tableRuler = (function () {
         // Each segment carries a grip on its trailing border: drag to size the
         // column/row, double-click a column grip to fit it to its content.
         const colSegs = Array.from({ length: nCols }, (_, i) =>
-            `<div class="ruler-seg" data-col="${i}" title="Column ${colLabel(i)}">${colLabel(i)}<span class="ruler-menu-caret" data-col="${i}" title="Column actions">\u25BE</span><span class="ruler-grip ruler-grip-col" title="Drag to resize · double-click to fit"></span></div>`
+            `<div class="ruler-seg" data-col="${i}" title="Column ${colLabel(i)}">${colLabel(i)}<span class="ruler-menu-caret" data-col="${i}" title="Click to insert a column · right-click for column actions">+</span><span class="ruler-grip ruler-grip-col" title="Drag to resize · double-click to fit"></span></div>`
         ).join('');
 
         // A row inside <thead> is frozen by the stylesheet, so its segment is
         // frozen too — see .ruler-seg-frozen.
         const rowSegs = Array.from({ length: nRows }, (_, i) => {
             const frozen = rows[i] && rows[i].parentNode && rows[i].parentNode.tagName === 'THEAD' ? ' ruler-seg-frozen' : '';
-            return `<div class="ruler-seg${frozen}" data-row="${i}" title="Row ${i + 1}">${i + 1}<span class="ruler-menu-caret" data-row="${i}" title="Row actions">\u25BE</span><span class="ruler-grip ruler-grip-row" title="Drag to resize"></span></div>`;
+            return `<div class="ruler-seg${frozen}" data-row="${i}" title="Row ${i + 1}">${i + 1}<span class="ruler-menu-caret" data-row="${i}" title="Click to insert a row · right-click for row actions">+</span><span class="ruler-grip ruler-grip-row" title="Drag to resize"></span></div>`;
         }).join('');
 
         // Assemble wrapper:
@@ -746,6 +1210,24 @@ window.tableRuler = (function () {
         //   body    = [row-ruler (always visible) | table-viewport (overflow-x:auto)]
         const $wrap = $(`
             <div class="table-ide-ruler-wrap">
+                <div class="table-ide-grid-toolbar">
+                    <div class="table-ide-grid-tb-group">
+                        <span class="table-ide-grid-search">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2 14 14"/></svg>
+                            <input type="search" class="table-ide-grid-search-input" placeholder="Search rows" aria-label="Search rows">
+                        </span>
+                    </div>
+                    <div class="table-ide-grid-tb-group">
+                        <button type="button" class="table-ide-grid-btn" data-gx-grid="filter" aria-expanded="false">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M4.5 8h7M6.5 12h3"/></svg>
+                            <span>Filter</span><span class="table-ide-grid-count" hidden></span>
+                        </button>
+                        <button type="button" class="table-ide-grid-btn" data-gx-grid="sort" aria-expanded="false">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3v10M4.5 13l-2-2M4.5 13l2-2M11.5 13V3M11.5 3l-2 2M11.5 3l2 2"/></svg>
+                            <span>Sort</span><span class="table-ide-grid-count" hidden></span>
+                        </button>
+                    </div>
+                </div>
                 <div class="table-ide-ruler-header">
                     <div class="table-ide-corner" title="Click to select the whole table · drag to move it · double-click to reset column widths"></div>
                     <div class="table-ide-col-ruler-vp">
@@ -758,6 +1240,14 @@ window.tableRuler = (function () {
                     </div>
                     <div class="table-ide-table-vp"></div>
                 </div>
+                <div class="table-ide-grid-footer">
+                    <span class="table-ide-grid-stat" data-gx-stat="rows"></span>
+                    <span class="table-ide-grid-stat-sep">·</span>
+                    <span class="table-ide-grid-stat" data-gx-stat="cols"></span>
+                    <span class="table-ide-grid-stat" data-gx-stat="sel" hidden></span>
+                    <span class="table-ide-grid-footer-spacer"></span>
+                    <span class="table-ide-grid-stat" data-gx-stat="hidden" hidden></span>
+                </div>
             </div>
         `);
 
@@ -769,6 +1259,7 @@ window.tableRuler = (function () {
         scheduleGeometrySync(table);
 
         _wireResize($wrap, table);
+        _wireGridChrome($wrap, table);
 
         // Sync scroll: table-vp → col-ruler-vp (x) and row-ruler-vp (y).
         // Both strips live outside the table's own scroll container so they can
@@ -812,7 +1303,29 @@ window.tableRuler = (function () {
             e.preventDefault();
             e.stopPropagation();
         });
+        // Left-click INSERTS (the + is a +, and it does the common thing with
+        // no menu in the way); right-click opens the full row/column menu.
+        // It used to open the menu on left-click, which made the one-gesture
+        // insert a three-gesture one for the operation people repeat most.
         $wrap.on('click.ruler', '.ruler-menu-caret', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const rowAttr = $(this).attr('data-row');
+            const axis = rowAttr != null ? 'row' : 'col';
+            const idx = parseInt(axis === 'row' ? rowAttr : $(this).attr('data-col'), 10);
+            window.currentTable = table;
+            // Select the target first: addRow/addColumn read window.selectedCells.
+            // A held multi-selection containing idx survives, so + on one of
+            // three selected rows inserts three rows.
+            if (axis === 'row') _preserveOrSelectRow($wrap, table, idx);
+            else                _preserveOrSelectCol($wrap, table, idx);
+            _closeHeaderMenu();
+            const fn = axis === 'row' ? window.addRow : window.addColumn;
+            if (typeof fn === 'function') fn();
+            if (typeof window.updateSelectionHandles === 'function') window.updateSelectionHandles();
+        });
+
+        $wrap.on('contextmenu.ruler', '.ruler-menu-caret', function (e) {
             e.preventDefault();
             e.stopPropagation();
             const rowAttr = $(this).attr('data-row');
@@ -821,26 +1334,37 @@ window.tableRuler = (function () {
             _openHeaderMenu($wrap, table, axis, idx, this);
         });
 
-        // ── Row ruler: right-click → select row + open cell context menu ─────
+        // ── Row ruler: right-click → the ROW action menu ─────────────────────
+        // Anywhere on the segment, not just on the little + — the whole segment
+        // IS the row handle, so that is the target the pointer expects.
+        //
+        // This used to open the generic #cellContextMenu, which meant a
+        // right-click on a row number offered cell actions and the row actions
+        // were reachable only by hitting the 14px caret. The row/column menu is
+        // the point of right-clicking a ruler.
+        //
+        // cellBeingEdited is still pointed at the row's first cell because the
+        // shared clipboard ops in the menu read it.
         $wrap.find('.table-ide-row-ruler').on('contextmenu.ruler', '.ruler-seg', function (e) {
             e.preventDefault();
             e.stopPropagation();
             const rowIdx = parseInt($(this).attr('data-row'), 10);
-            _handleRulerRowClick($wrap, table, rowIdx, { shiftKey: false });
+            _preserveOrSelectRow($wrap, table, rowIdx);
             window.cellBeingEdited = table.rows[rowIdx] ? table.rows[rowIdx].cells[0] : null;
-            _showContextMenuAt(e.clientX, e.clientY);
+            _openHeaderMenuAt($wrap, table, 'row', rowIdx, e.clientX, e.clientY);
         });
 
-        // ── Col ruler: right-click → select column + open cell context menu ──
+        // ── Col ruler: right-click → the COLUMN action menu ──────────────────
+        // See the row handler above for why this is not the cell menu.
         $wrap.find('.table-ide-col-ruler-vp').on('contextmenu.ruler', '.ruler-seg', function (e) {
             e.preventDefault();
             e.stopPropagation();
             const colIdx = parseInt($(this).attr('data-col'), 10);
-            _handleRulerColClick($wrap, table, colIdx, { shiftKey: false });
+            _preserveOrSelectCol($wrap, table, colIdx);
             const m2 = new window.VisualGridMapper(table);
             const firstCell = m2.getCellsInColumn(colIdx)[0] || null;
             window.cellBeingEdited = firstCell;
-            _showContextMenuAt(e.clientX, e.clientY);
+            _openHeaderMenuAt($wrap, table, 'col', colIdx, e.clientX, e.clientY);
         });
 
         // Ruler highlight on cell click
@@ -881,7 +1405,20 @@ window.tableRuler = (function () {
             // double-click-then-drag the only way into a reorder, matching the
             // selection-move gesture in cellHandles.js.
             if (e.detail < 2) {
+                // Select on press, then SWEEP: dragging across segments extends
+                // the selection, the same gesture as dragging across cells
+                // (see the mousemove.cell handler in core/tableIde.js).
+                //
+                // This used to return here with no move listener, so a drag
+                // across the strip did nothing at all — the press selected one
+                // row and the rest of the gesture was dropped on the floor.
+                //
+                // Extending from the press index rather than from the segment
+                // under the cursor is what makes the sweep reversible: drag
+                // down then back up and the band shrinks instead of stranding
+                // the rows you already passed.
                 _handleRulerRowClick($wrap, table, rowIdx, e);
+                _beginRulerSweep($wrap, table, 'row', rowIdx, e);
                 return;
             }
 
@@ -919,7 +1456,9 @@ window.tableRuler = (function () {
             // Single press selects, never reorders. See the row handler above
             // for why the reorder is gated behind the second press.
             if (e.detail < 2) {
+                // Select on press, then sweep. See the row handler above.
                 _handleRulerColClick($wrap, table, colIdx, e);
+                _beginRulerSweep($wrap, table, 'col', colIdx, e);
                 return;
             }
 

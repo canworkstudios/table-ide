@@ -951,16 +951,23 @@ body.tf-resizing-row, body.tf-resizing-row * { cursor: row-resize !important; }
 /* A bare chevron, not a chip. Numbers draws this as a plain muted glyph on the
    segment itself — a filled pill reads as a button that does something on its
    own, when all it does is reveal a menu. */
+/* The + affordance. It INSERTS a row/column on left-click and opens the
+   row/column menu on right-click, so it is styled as a real button rather than
+   the faint caret glyph it replaced — a 9px dropdown arrow reads as decoration,
+   and this is the control people press most. */
 .ruler-menu-caret {
     position: absolute;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 12px;
-    height: 12px;
-    font-size: 9px;
+    width: 14px;
+    height: 14px;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1;
-    background: transparent;
+    border-radius: 3px;
+    background: var(--t-bg-surface, #ffffff);
+    box-shadow: 0 0 0 1px var(--t-border, #e5e7eb);
     color: var(--t-text-muted, #8a8a8a);
     opacity: 0;
     pointer-events: none;
@@ -972,7 +979,9 @@ body.tf-resizing-row, body.tf-resizing-row * { cursor: row-resize !important; }
 
 .ruler-menu-caret:hover,
 .ruler-menu-caret.is-open {
-    color: var(--t-text, #202020);
+    color: #ffffff;
+    background: var(--t-primary, #1a73e8);
+    box-shadow: 0 0 0 1px var(--t-primary, #1a73e8);
 }
 
 /* Hover only — never on .ruler-active. Selecting a row/column (and the corner
@@ -1386,24 +1395,34 @@ body.tf-no-select { user-select: none; -webkit-user-select: none; }
     overflow: visible;
 }
 
-/* ── Zoom control (bottom-right of the table view) ───────────────────────── */
+/* ── Zoom control (lives in .center-header) ────────────────────────────────
+   It used to be `position: absolute` inside `.table-wrapper`. That wrapper is
+   BOTH `position: relative` and `overflow: auto`, so the bar anchored to the
+   scrollable CONTENT box rather than the visible pane: it rode the scroll, and
+   on any table taller than the pane it came to rest directly on top of the
+   cells — in the way exactly when the sheet was big enough to need it.
+   Sticky fixed the drift but kept it overlaying the grid, because anything
+   inside that pane overlays the grid.
+   
+   The fix is to leave the scroll container entirely. The header is already the
+   home of view-level controls (tab count, add-table, panel toggle), it is a
+   fixed 49px strip that never scrolls, and a control that changes how the whole
+   canvas is displayed belongs with them rather than floating over the data. */
 .tf-zoom-bar {
-    position: absolute;
-    right: 14px;
-    /* Clear of the announcement banner that pins to the bottom of the viewport;
-       at 14px the control sat half-under it. */
-    bottom: 52px;
-    z-index: 60;
     display: flex;
     align-items: center;
     gap: 2px;
-    padding: 3px;
+    padding: 2px;
+    /* No `margin-left: auto` — the header is `justify-content: space-between`
+       and an auto margin here collapses that, pulling the title and the tab
+       controls together on the left. Let the header do its own spacing. */
+    margin-right: 8px;
     background: var(--t-bg-surface, #fff);
     border: 1px solid var(--t-border, #d8dbe0);
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    border-radius: 7px;
     font-size: 12px;
     user-select: none;
+    flex-shrink: 0;
 }
 
 .tf-zoom-bar button {
@@ -1443,4 +1462,250 @@ body.tf-canvas-active .table-wrapper {
 body.tf-canvas-active #tableContainer {
     height: 100%;
     min-height: 320px;
+}
+
+/* ==================== GRID CHROME (Supabase-style table editor) ====================
+   The toolbar and footer that frame .table-ide-table-vp. The point of this shell
+   is that it is shape-independent: whatever the extracted table looks like
+   inside — jagged, merged, half-empty — it is still rows and columns, so a
+   search box, a filter/sort clause list and a row/column counter always apply.
+   All of it is VIEW state; nothing here writes to the document. */
+
+.table-ide-grid-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--t-bg-surface, #fff);
+    border: 1px solid var(--t-border, #d6d6d6);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+
+.table-ide-grid-tb-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* The search field grows; the clause buttons sit to its right. */
+.table-ide-grid-toolbar .table-ide-grid-tb-group:first-child {
+    flex: 1 1 180px;
+    min-width: 140px;
+}
+
+.table-ide-grid-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.table-ide-grid-search svg {
+    position: absolute;
+    left: 7px;
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: var(--t-text-muted, #8a8a8a);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    pointer-events: none;
+}
+
+.table-ide-grid-search-input {
+    width: 100%;
+    padding: 4px 8px 4px 24px;
+    font: inherit;
+    color: var(--t-text, #202020);
+    background: var(--t-bg-input, #ffffff);
+    border: 1px solid var(--t-border, #d6d6d6);
+    border-radius: 4px;
+    outline: none;
+}
+
+.table-ide-grid-search-input:focus {
+    border-color: var(--t-primary, #1a73e8);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-primary, #1a73e8) 18%, transparent);
+}
+
+.table-ide-grid-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    font: inherit;
+    color: var(--t-text, #202020);
+    background: var(--t-bg-input, #ffffff);
+    border: 1px solid var(--t-border, #d6d6d6);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.1s, border-color 0.1s;
+}
+
+.table-ide-grid-btn svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+}
+
+.table-ide-grid-btn:hover { background: var(--t-hover-bg, #f0f0f0); }
+
+/* An active clause set is the one thing in this bar that must be obvious at a
+   glance — a filtered grid that looks unfiltered is how people misread data. */
+.table-ide-grid-btn.is-active,
+.table-ide-grid-btn.is-open {
+    color: var(--t-primary, #1a73e8);
+    border-color: var(--t-primary, #1a73e8);
+    background: color-mix(in srgb, var(--t-primary, #1a73e8) 10%, transparent);
+}
+
+.table-ide-grid-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    color: #ffffff;
+    background: var(--t-primary, #1a73e8);
+    border-radius: 8px;
+}
+
+/* ── Footer: the grid's status line ── */
+.table-ide-grid-footer {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    background: var(--t-bg-surface, #fff);
+    border: 1px solid var(--t-border, #d6d6d6);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--t-text-muted, #8a8a8a);
+    user-select: none;
+}
+
+.table-ide-grid-footer-spacer { flex: 1; }
+.table-ide-grid-stat-sep      { opacity: 0.5; }
+
+.table-ide-grid-footer [data-gx-stat="sel"],
+.table-ide-grid-footer [data-gx-stat="hidden"] {
+    color: var(--t-primary, #1a73e8);
+}
+
+/* ── Filter / sort popover ── */
+.table-ide-grid-pop {
+    position: fixed;
+    z-index: 10050;
+    min-width: 290px;
+    max-width: 380px;
+    padding: 8px;
+    font-size: 12px;
+    background: var(--t-bg-surface, #fff);
+    border: 1px solid var(--t-border, #d6d6d6);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.table-ide-grid-pop-head {
+    padding: 2px 2px 6px;
+    font-weight: 600;
+    color: var(--t-text, #202020);
+}
+
+.table-ide-grid-pop-empty {
+    padding: 6px 2px 8px;
+    color: var(--t-text-muted, #8a8a8a);
+}
+
+.table-ide-grid-pop-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 5px;
+}
+
+.table-ide-grid-pop-sel,
+.table-ide-grid-pop-val {
+    min-width: 0;
+    padding: 3px 5px;
+    font: inherit;
+    color: var(--t-text, #202020);
+    background: var(--t-bg-input, #ffffff);
+    border: 1px solid var(--t-border, #d6d6d6);
+    border-radius: 4px;
+    outline: none;
+}
+
+.table-ide-grid-pop-sel { flex: 0 1 auto; }
+.table-ide-grid-pop-val { flex: 1 1 60px; }
+
+.table-ide-grid-pop-sel:focus,
+.table-ide-grid-pop-val:focus { border-color: var(--t-primary, #1a73e8); }
+
+.table-ide-grid-pop-del {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--t-text-muted, #8a8a8a);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.table-ide-grid-pop-del:hover {
+    color: #dc2626;
+    background: var(--t-hover-bg, #f0f0f0);
+}
+
+.table-ide-grid-pop-add,
+.table-ide-grid-pop-clear {
+    width: 100%;
+    margin-top: 4px;
+    padding: 5px;
+    font: inherit;
+    text-align: left;
+    color: var(--t-primary, #1a73e8);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.table-ide-grid-pop-clear { color: var(--t-text-muted, #8a8a8a); }
+
+.table-ide-grid-pop-add:hover,
+.table-ide-grid-pop-clear:hover { background: var(--t-hover-bg, #f0f0f0); }
+
+/* A row filtered out of the view. display:none gives it zero height, which is
+   already how _syncRulerSegments decides to hide the matching ruler segment —
+   so the row number strip stays in step with the rows for free. */
+.table-ide-ruler-wrap .tablecoil tr.gx-grid-filtered-out { display: none; }
+
+/* The grid body sits flush between toolbar and footer, so it drops the rounded
+   corners it has when it stands alone. */
+.table-ide-grid-toolbar + .table-ide-ruler-header { border-radius: 0; }
+
+/* While a ruler sweep is in flight the pointer is dragging across header
+   segments, so the browser's own text selection would otherwise highlight every
+   row number it crosses and fight the band being built. */
+body.gx-ruler-sweeping,
+body.gx-ruler-sweeping * {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default !important;
 }

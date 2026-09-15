@@ -49,8 +49,15 @@ function _matrixAsTsv(matrix) {
 
 // A paste is also a request for a destination range.  New sheets begin as a
 // small table, but a spreadsheet does not make the user pre-size it before
-// pasting a copied matrix.  Grow only plain grids here: expanding through a
-// merge is ambiguous and remains an explicit unmerge-first operation below.
+// pasting a copied matrix, so grow to fit.
+//
+// This used to refuse whenever the table contained ANY merge, anywhere. That
+// was a scope error: growing appends <td>s at the right/bottom EDGE, which a
+// merge elsewhere cannot affect — a colspan in row 0 blocked appending a column
+// at the far right, which it has nothing to do with. VisualGridMapper.buildGrid
+// walks past occupied slots (`while (grid[r][c] !== undefined) c++`), so the
+// rebuilt matrix absorbs the new cells correctly even through merges and
+// rowspans dangling down from earlier rows.
 function _growTableForMatrix(anchor, matrix) {
     let mapper = new window.VisualGridMapper(window.currentTable);
     const pos = mapper.getVisualPosition(anchor);
@@ -59,15 +66,6 @@ function _growTableForMatrix(anchor, matrix) {
     const neededRows = pos.startRow + matrix.rows;
     const neededCols = pos.startCol + matrix.cols;
     if (neededRows <= mapper.maxRows && neededCols <= mapper.maxCols) return mapper;
-
-    const isPlain = mapper.grid.every(row => row.every(slot => {
-        const cellPos = slot && mapper.getVisualPosition(slot.element);
-        return slot && slot.isOrigin && cellPos && cellPos.rowspan === 1 && cellPos.colspan === 1;
-    }));
-    if (!isPlain) {
-        $.toast({ heading: 'Paste', text: 'Unmerge the destination table before extending it for this matrix.', icon: 'warning', loader: false, stack: false });
-        return null;
-    }
 
     const rows = Array.from(window.currentTable.querySelectorAll('tr'));
     const extraCols = Math.max(0, neededCols - mapper.maxCols);
@@ -83,6 +81,75 @@ function _growTableForMatrix(anchor, matrix) {
     return new window.VisualGridMapper(window.currentTable);
 }
 
+// Free every slot the paste rectangle lands on, by unmerging ONLY the merges
+// that intersect that rectangle.
+//
+// A copied a x b matrix needs b addressable origins per row. Where the
+// destination holds a merged cell, those coordinates are continuation slots
+// that cannot be written without corrupting geometry — which is why this used
+// to be refused outright.
+//
+// Unmerging just the blockers is the surgical version: the merge in the path
+// gives up its span, every merge outside the path is untouched. Flattening the
+// whole table would also work mechanically, but it destroys structure the user
+// never targeted — banner titles, grouped headers, row stubs — which in a tool
+// for forensically reconstructed tables IS the extracted meaning.
+//
+// Freed columns are padded so the row keeps its width. Without the padding the
+// grid goes ragged and the NEXT operation faces a worse table than this one did.
+//
+// Returns a fresh mapper, or null if nothing needed changing.
+function _unmergeRect(mapper, minRow, minCol, rows, cols) {
+    const maxRow = minRow + rows - 1;
+    const maxCol = minCol + cols - 1;
+
+    // Collect the distinct merged elements intersecting the rectangle.
+    const blockers = new Set();
+    for (let r = minRow; r <= maxRow; r++) {
+        for (let c = minCol; c <= maxCol; c++) {
+            const slot = mapper.grid[r] && mapper.grid[r][c];
+            if (!slot) continue;
+            const pos = mapper.getVisualPosition(slot.element);
+            if (pos && (pos.rowspan > 1 || pos.colspan > 1)) blockers.add(slot.element);
+        }
+    }
+    if (!blockers.size) return null;
+
+    blockers.forEach(el => {
+        const pos = mapper.getVisualPosition(el);
+        if (!pos) return;
+        const $el = $(el);
+        const tag = el.tagName.toLowerCase();
+
+        // Drop the span first so the freed coordinates are real slots again.
+        $el.removeAttr('colspan').removeAttr('rowspan');
+
+        // Pad the columns this cell used to cover on its own row...
+        for (let c = 1; c < pos.colspan; c++) {
+            $el.after(document.createElement(tag));
+        }
+
+        // ...and the rows it used to hang into. A rowspan cannot be shortened
+        // without the rows below gaining a cell, so this necessarily touches
+        // coordinates outside the rectangle — unavoidable geometry, not a
+        // choice. The padding goes at the same visual column the span occupied.
+        const tableRows = Array.from(window.currentTable.querySelectorAll('tr'));
+        for (let r = 1; r < pos.rowspan; r++) {
+            const row = tableRows[pos.startRow + r];
+            if (!row) continue;
+            for (let c = 0; c < pos.colspan; c++) {
+                const pad = document.createElement(tag);
+                // Place at the span's visual column by counting real cells.
+                const ref = row.children[Math.min(pos.startCol + c, row.children.length)];
+                if (ref) row.insertBefore(pad, ref);
+                else     row.appendChild(pad);
+            }
+        }
+    });
+
+    return new window.VisualGridMapper(window.currentTable);
+}
+
 function _pasteMatrixAt(target) {
     const matrix = window.tableIdeClipboard;
     if (!matrix || matrix.version !== 2) return false;
@@ -95,22 +162,33 @@ function _pasteMatrixAt(target) {
         anchor = mapper.getVisualPosition(target);
     }
 
-    // Replacing a partial merged cell would corrupt table geometry. Require a
-    // plain destination rectangle; copied merged cells are recreated exactly.
+    // Save BEFORE any structural change, so undo reverses the unmerge and the
+    // paste together as one step rather than leaving a half-applied table.
+    window.saveCurrentState();
+
+    // Clear merges out of the destination rectangle instead of refusing it.
+    // Copied merged cells are still recreated exactly by the write below.
+    const freed = _unmergeRect(mapper, anchor.startRow, anchor.startCol, matrix.rows, matrix.cols);
+    if (freed) {
+        mapper = freed;
+        anchor = mapper.getVisualPosition(target);
+        if (!anchor) return false;
+    }
+
     const targets = [];
     for (let r = 0; r < matrix.rows; r++) {
         for (let c = 0; c < matrix.cols; c++) {
             const slot = mapper.grid[anchor.startRow + r] && mapper.grid[anchor.startRow + r][anchor.startCol + c];
-            const pos = slot && mapper.getVisualPosition(slot.element);
-            if (!slot || !slot.isOrigin || !pos || pos.rowspan !== 1 || pos.colspan !== 1) {
-                $.toast({ heading: 'Paste', text: 'Unmerge the destination range before pasting a matrix.', icon: 'warning', loader: false, stack: false });
+            // After _unmergeRect every coordinate in the rectangle should be an
+            // origin. If one still is not, the geometry is beyond what this can
+            // safely resolve, so stop rather than corrupt the table.
+            if (!slot || !slot.isOrigin) {
+                $.toast({ heading: 'Paste', text: 'That destination could not be cleared for this matrix.', icon: 'warning', loader: false, stack: false });
                 return false;
             }
             targets.push(slot.element);
         }
     }
-
-    window.saveCurrentState();
     const consumed = new Set();
     matrix.cells.forEach(cell => {
         const index = cell.row * matrix.cols + cell.col;
@@ -369,6 +447,10 @@ function deleteRows() {
     // Clear selection
     window.selectedCells = [];
 
+    // A rowspan reaching into a deleted row leaves the surviving rows uneven,
+    // so square the table up here too.
+    if (typeof window.normalizeGrid === 'function') window.normalizeGrid(table);
+
     // Snapshot AFTER mutation so each user action gets a distinct undo slot
     // (the dedup check in saveCurrentState would otherwise collapse this with
     //  the previous post-mutation snapshot).
@@ -411,14 +493,52 @@ function deleteColumns() {
     // Disconnect ruler observer before mutating so it doesn't race with renderTableRulers
     if (table._tableIdeStructObs) table._tableIdeStructObs.disconnect();
 
-    // Use getCellsInColumn to get the real DOM elements — safe with colspan/rowspan
+    // Remove a cell ONLY when it lies entirely inside the deleted columns;
+    // when it merely spans across one, shrink its colspan instead.
+    //
+    // This used to delete whatever getCellsInColumn returned, which for a
+    // spanning cell is a cell that also occupies OTHER columns — so deleting
+    // column 0 of a table whose first row held a colspan=2 took column 1's
+    // content from that row too and left the row one cell short. That is the
+    // single biggest source of the ragged "tetris" shape: the table stopped
+    // being rectangular because a structural op was not span-aware.
+    //
+    // The delete set is resolved against ONE mapper snapshot taken before any
+    // mutation, so indices stay meaningful while the DOM changes underneath.
+    const doomed = new Set(colsArray);
+    const handled = new Set();
+
     colsArray.forEach(colIndex => {
-        const cellsToRemove = mapper.getCellsInColumn(colIndex);
-        cellsToRemove.forEach(cell => $(cell).remove());
+        mapper.getCellsInColumn(colIndex).forEach(cell => {
+            if (handled.has(cell)) return;      // a spanning cell is reachable from several columns
+            handled.add(cell);
+
+            const pos = mapper.getVisualPosition(cell);
+            if (!pos) { $(cell).remove(); return; }
+
+            // How many of this cell's columns are being deleted?
+            let covered = 0;
+            for (let c = pos.startCol; c < pos.startCol + pos.colspan; c++) {
+                if (doomed.has(c)) covered++;
+            }
+
+            if (covered >= pos.colspan) {
+                $(cell).remove();               // wholly inside the deletion
+            } else {
+                const left = pos.colspan - covered;
+                if (left > 1) $(cell).attr('colspan', left);
+                else          $(cell).removeAttr('colspan');
+            }
+        });
     });
 
     // Clear selection
     window.selectedCells = [];
+
+    // Square the table up. Deleting a column can still leave rows uneven when
+    // spans overlap the boundary in different ways per row; the invariant is
+    // enforced in one place rather than re-derived by every caller.
+    if (typeof window.normalizeGrid === 'function') window.normalizeGrid(table);
 
     // Snapshot AFTER mutation so each user action gets a distinct undo slot
     // (the dedup check in saveCurrentState would otherwise collapse this with

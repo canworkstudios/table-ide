@@ -1274,6 +1274,19 @@
             </button>
           </div>
 
+          <!-- Canvas controls: free-position tables, pan and zoom (Numbers-style).
+               Lives in the center header, NOT in .table-wrapper: that wrapper is the
+               scrolling pane, so a control inside it sits on top of the grid and
+               rides the scroll. Here it is outside the scroll container entirely and
+               sits with the other view-level controls. -->
+          <div class="tf-zoom-bar" id="tfZoomBar">
+            <button type="button" id="tfCanvasToggle" title="Toggle canvas layout">▦</button>
+            <button type="button" id="tfZoomOut" title="Zoom out (⌘−)">−</button>
+            <span class="tf-zoom-level" id="tfZoomLevel" title="Click to reset to 100% (⌘0)">100%</span>
+            <button type="button" id="tfZoomIn" title="Zoom in (⌘+)">+</button>
+            <button type="button" id="tfZoomFit" title="Fit all tables">⛶</button>
+          </div>
+
           <!-- Right panel toggle -->
         <button
           id="toggleRightPanel"
@@ -1366,14 +1379,6 @@
             class="text-center"
           ></p> -->
           <div class="table-container" id="tableContainer"></div>
-          <!-- Canvas controls: free-position tables, pan and zoom (Numbers-style) -->
-          <div class="tf-zoom-bar" id="tfZoomBar">
-            <button type="button" id="tfCanvasToggle" title="Toggle canvas layout">▦</button>
-            <button type="button" id="tfZoomOut" title="Zoom out (⌘−)">−</button>
-            <span class="tf-zoom-level" id="tfZoomLevel" title="Click to reset to 100% (⌘0)">100%</span>
-            <button type="button" id="tfZoomIn" title="Zoom in (⌘+)">+</button>
-            <button type="button" id="tfZoomFit" title="Fit all tables">⛶</button>
-          </div>
         </div>
 
         <!-- Sheet tab bar -->

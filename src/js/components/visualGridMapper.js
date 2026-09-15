@@ -106,3 +106,66 @@ window.VisualGridMapper = VisualGridMapper;
 window.isCellVisible = function (cell) {
     return !!(cell && cell.getClientRects && cell.getClientRects().length > 0);
 };
+
+/**
+ * normalizeGrid — the rectangular-grid invariant.
+ *
+ * An HTML table is a FLOW of cells: a row holds however many <td>s you gave it,
+ * and removing one makes the rest shift left. A spreadsheet is a COORDINATE
+ * GRID: every row has the same number of addressable slots whether or not
+ * anything is in them. Table IDE presents a sheet, so the grid model has to be
+ * the authoritative one and the DOM has to be made to agree with it.
+ *
+ * That is all this does: find the widest row (in VISUAL columns, spans counted)
+ * and pad every short row with empty cells until the table is rectangular.
+ * Run it after any structural mutation and raggedness stops being possible
+ * rather than being something each operation has to remember not to cause.
+ *
+ * Deliberately NOT done here:
+ *   • No fixed R x C canvas, no phantom columns out to some letter. These
+ *     tables come from extracted documents — a 4-column table IS 4 columns, and
+ *     padding it to 26 would invent structure the source never had, which the
+ *     export and the provenance trail would then have to carry.
+ *   • Rows are never TRIMMED, only padded. A row wider than the rest means a
+ *     real cell exists out there; silently deleting it to square the table
+ *     would destroy content, and losing data is worse than a ragged edge.
+ *
+ * Padding cells inherit the row's own tag so a <thead> row stays all <th>.
+ *
+ * Returns the number of cells added (0 when the table was already rectangular),
+ * so callers can skip a re-render when nothing moved.
+ */
+window.normalizeGrid = function (table) {
+    const el = table instanceof jQuery ? table[0] : table;
+    if (!el) return 0;
+
+    const mapper = new window.VisualGridMapper(el);
+    if (!mapper.maxRows || !mapper.maxCols) return 0;
+
+    // Structural rows only — the drag/drop scaffolding rows are not table rows
+    // and padding them would put stray cells in the middle of a gesture.
+    const rows = Array.from(el.rows).filter(r =>
+        !r.classList.contains('table-ide-drag-row') &&
+        !r.classList.contains('drop-indicator-row')
+    );
+
+    let added = 0;
+    rows.forEach((row, i) => {
+        // Count VISUAL occupancy, not row.cells.length: one colspan=3 cell
+        // fills three columns, and a rowspan from an earlier row fills this
+        // row's slot without contributing a cell to it at all.
+        const occupied = (mapper.grid[i] || []).filter(Boolean).length;
+        const missing  = mapper.maxCols - occupied;
+        if (missing <= 0) return;
+
+        const tag = row.querySelector('td') ? 'td'
+                  : row.querySelector('th') ? 'th'
+                  : (row.parentNode && row.parentNode.tagName === 'THEAD' ? 'th' : 'td');
+        for (let n = 0; n < missing; n++) {
+            row.appendChild(document.createElement(tag));
+            added++;
+        }
+    });
+
+    return added;
+};
