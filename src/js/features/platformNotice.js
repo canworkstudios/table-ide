@@ -18,7 +18,7 @@
 // what it says. Nothing here reveals how the feature or its gate work.
 
 (function () {
-  var PLATFORM_URL = "https://ginexys.com/tools/table-formatter";
+  var PLATFORM_URL = "https://ginexys.com/app/tafne";
 
   function _card(copy) {
     var wrap = document.createElement("div");
