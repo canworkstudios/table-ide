@@ -334,6 +334,8 @@
     <script src="src/js/features/tableCanvas.js"></script>
     <script src="src/js/features/generateFunctions.js"></script>
     <script src="src/js/features/parseInputs.js"></script>
+    <script src="src/js/features/xlsxReader.js"></script>
+    <script src="src/js/features/platformNotice.js"></script>
     <script src="src/js/features/tableManipulation.js"></script>
     <script src="src/js/features/tableOperations.js"></script>
     <script src="src/js/features/tableIdeTabs.js"></script>
@@ -531,7 +533,7 @@
         <input
           type="file"
           id="fileInput"
-          accept=".csv,.tsv,.txt,.html,.htm,.md,.json,.sql"
+          accept=".csv,.tsv,.txt,.html,.htm,.md,.json,.sql,.xlsx"
           style="display: none"
         />
         <button
@@ -1465,7 +1467,9 @@
               <option value="csv">CSV</option>
               <option value="sql">SQL</option>
               <option value="ascii">ASCII / Plain Text</option>
+              <option value="xlsx">Excel (.xlsx)</option>
             </select>
+            <div id="xlsx-export-slot"></div>
             <div class="generate-actions">
               <button
                 id="generateCode"
@@ -2216,6 +2220,30 @@
         if (dlBtn) {
           dlBtn.addEventListener("click", function () {
             var format = document.getElementById("exportFormat").value;
+
+            // xlsx is binary — the editor can't hold it. Regenerate from the
+            // table DOM through the same gate generateCode uses (presence +
+            // sign-in), then download. Fork-safe: no gate, no download, and
+            // the platformNotice card in #xlsx-export-slot explains why.
+            if (format === "xlsx") {
+              var tablesEls = document.querySelectorAll(
+                "#tableContainer table",
+              );
+              if (!tablesEls.length) return;
+              var gate = window.GxTableIdeXlsxExport;
+              if (!gate || !gate.canExport || !gate.canExport()) return;
+              var res = exportAsXlsx($(tablesEls));
+              var xUrl = URL.createObjectURL(res.blob);
+              var xA = document.createElement("a");
+              xA.href = xUrl;
+              xA.download = res.fileName;
+              document.body.appendChild(xA);
+              xA.click();
+              document.body.removeChild(xA);
+              URL.revokeObjectURL(xUrl);
+              return;
+            }
+
             var extMap = {
               html: "html",
               json: "json",

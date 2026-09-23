@@ -88,6 +88,39 @@ function handleFileLoad(file) {
     const ext = file.name.split('.').pop().toLowerCase();
     const reader = new FileReader();
 
+    // .xlsx is a binary ZIP — read as ArrayBuffer and hand to the OOXML
+    // reader. Everything else stays on the text path.
+    if (ext === 'xlsx') {
+        reader.onload = function (e) {
+            const buffer = e.target.result;
+            parseXlsxInput(buffer)
+                .then(function (tableHtml) {
+                    if (!tableHtml) {
+                        alert('Could not parse file: ' + file.name);
+                        return;
+                    }
+                    const sheetName = file.name.replace(/\.[^/.]+$/, '');
+                    if (typeof addSheet === 'function') {
+                        addSheet(sheetName, tableHtml);
+                    } else {
+                        window.lastParsedHtml = tableHtml;
+                        generateTabs(tableHtml);
+                        window.currentTable = $('#tableContainer table')[0];
+                        initializeAllFeatures();
+                        setupTableInteraction();
+                        window.saveCurrentState();
+                    }
+                    $.toast({ heading: 'Loaded', text: 'Loaded: ' + file.name, icon: 'success', loader: false, stack: false });
+                })
+                .catch(function (err) {
+                    console.error('XLSX parse failed:', err);
+                    alert('Could not parse .xlsx file: ' + file.name);
+                });
+        };
+        reader.readAsArrayBuffer(file);
+        return;
+    }
+
     reader.onload = function (e) {
         const text = e.target.result;
         let tableHtml = '';

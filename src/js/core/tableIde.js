@@ -1387,6 +1387,70 @@ $(function () {
         _gxLoadFile(window.__GINEXYS_INITIAL_FILE__);
     }
 
+    // ── VS Code: binary .xlsx open + reload ─────────────────────────────────
+    // xlsx can't ride the text __GINEXYS_INITIAL_FILE__ route; the XlsxEditor
+    // extension provider sends base64 bytes instead. Public MIT: this is shape
+    // (decode a file format the user opened), not gate — exactly the split the
+    // pdf tool applies to its own ginexys:pdf-bytes handler.
+    function _gxLoadXlsxFromBase64(base64, sheetName) {
+        var bytes;
+        try {
+            var bin = atob(base64);
+            bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        } catch (err) {
+            console.error('[GX] xlsx base64 decode failed:', err);
+            return;
+        }
+        parseXlsxInput(bytes)
+            .then(function (tableHtml) {
+                if (!tableHtml) return;
+                if (typeof addSheet === 'function') {
+                    // Reloads replace, they don't stack: a watcher-fired second
+                    // `ginexys:xlsx-bytes` lands after the first load's sheets
+                    // are already in the tabs bar.
+                    if (window.sheets && window.sheets.length) {
+                        window.sheets = [];
+                        window.activeSheetId = null;
+                        window.lastParsedHtml = null;
+                        if (typeof renderSheetTabs === 'function') renderSheetTabs();
+                    }
+                    addSheet(sheetName || 'Sheet 1', tableHtml);
+                } else {
+                    window.lastParsedHtml = tableHtml;
+                    generateTabs(tableHtml);
+                    window.currentTable = $('#tableContainer table')[0];
+                    initializeAllFeatures();
+                    setupTableInteraction();
+                    window.saveCurrentState();
+                }
+            })
+            .catch(function (err) {
+                console.error('[GX] xlsx parse failed:', err);
+                if (typeof showToast === 'function') {
+                    showToast('Could not parse this .xlsx file.', 'error');
+                }
+            });
+    }
+
+    window.addEventListener('message', function (e) {
+        if (e.data?.type !== 'ginexys:xlsx-bytes') return;
+        var payload = e.data.payload || {};
+        _gxLoadXlsxFromBase64(
+            payload.buffer || '',
+            payload.fileName ? payload.fileName.replace(/\.[^/.]+$/, '') : 'Sheet 1'
+        );
+    });
+
+    // Announce ready ONLY after the listener above exists — the xlsx provider
+    // answers this by posting the file's bytes, so getting it out before the
+    // listener lands would drop the reply with no error anywhere (same race the
+    // pdf tool documents for its own pdf-ready). Embedded-only: the browser
+    // shell has no host waiting on this channel.
+    if (window.CwsBridge?.isEmbedded) {
+        window.CwsBridge.send('ginexys:tafne-xlsx-ready', {});
+    }
+
     // ── Save back to the VS Code document ────────────────────────────────────
     // TableIdeEditorProvider has always handled a `ginexys:save` message, but
     // nothing in the tool ever sent one — so edits made here never reached the

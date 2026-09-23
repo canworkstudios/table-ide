@@ -2395,3 +2395,50 @@ body.gx-embedded .gx-mcp-pill-wrap { display: flex; }
     color: var(--t-accent, #4fa8f5);
     text-decoration: none;
 }
+
+/* ===========================
+   PLATFORM NOTICE (xlsx export gate card)
+   =========================== */
+.gx-platform-notice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    border: 1px solid var(--t-border);
+    border-radius: 8px;
+    background: var(--t-bg-workspace);
+}
+.gx-platform-notice-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: var(--t-accent, #4a90d9);
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    margin-bottom: 2px;
+}
+.gx-platform-notice-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--t-text);
+}
+.gx-platform-notice-body {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--t-text-muted);
+}
+.gx-platform-notice-cta {
+    margin-top: 4px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--t-accent, #4a90d9);
+    text-decoration: none;
+}
+.gx-platform-notice-cta:hover {
+    text-decoration: underline;
+}
