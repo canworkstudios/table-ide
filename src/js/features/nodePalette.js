@@ -47,7 +47,7 @@ function _buildPalette(palette) {
     // Order is the palette order. Whether an entry is Pro-locked comes from the
     // type registry's `pro` slug, so tiering is declared in one place rather
     // than duplicated as hardcoded markup here.
-    const operatorTypes = ['filter', 'condition', 'vlookup', 'formula', 'join', 'diff', 'api'];
+    const operatorTypes = ['filter', 'condition', 'vlookup', 'formula', 'join', 'append', 'diff', 'api'];
     palette.innerHTML = '';
 
     const heading = document.createElement('div');
@@ -96,7 +96,7 @@ function _placeOperatorNode(type) {
     }
 
     // Place near canvas center
-    const viewport = document.getElementById('nodeEditorViewport');
+    const viewport = document.querySelector('.tf-canvas-viewport') || document.getElementById('nodeEditorViewport');
     const vp       = window.NodeGraph.viewport;
     const cx = viewport ? viewport.clientWidth  / 2 : 400;
     const cy = viewport ? viewport.clientHeight / 2 : 300;

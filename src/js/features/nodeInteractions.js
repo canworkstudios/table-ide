@@ -25,13 +25,26 @@ class NodeInteractionManager {
         this._boundKeyUp       = this._onKeyUp.bind(this);
         this._boundContextMenu = this._onContextMenu.bind(this);
         this._portMenuEl       = null;   // active port context menu DOM element
+        this._opts             = {};
+    }
+
+    // Tell the host canvas the view or node positions changed. The table
+    // canvas owns more than the graph (selection overlay, rulers, zoom label,
+    // sheet frames), so it needs to hear about moves it did not make itself.
+    _emit(name, arg) {
+        const fn = this._opts[name];
+        if (typeof fn === 'function') fn(arg);
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
-    init(containerEl) {
+    // opts.wheel === false leaves wheel handling to the host (the table canvas
+    // pans on a plain wheel, which suits trackpads better than zoom-only).
+    // opts.onViewportChange / onNodesMoving / onNodesMoved are host hooks.
+    init(containerEl, opts) {
         this.container = containerEl;
-        this.container.addEventListener('wheel',       this._boundWheel,       { passive: false });
+        this._opts = opts || {};
+        if (this._opts.wheel !== false) this.container.addEventListener('wheel', this._boundWheel, { passive: false });
         // Pointer events: mouse + touch + stylus. Move/up stay on document so
         // gestures tracked outside the canvas keep working and `e.target` on
         // pointerup is the real element under the pointer (wire completion).
@@ -112,6 +125,7 @@ class NodeInteractionManager {
         // ── Port → start wire
         const portEl = target.closest('.ne-port');
         if (portEl) {
+            e.preventDefault();
             this._startWire(portEl, e);
             return;
         }
@@ -150,10 +164,11 @@ class NodeInteractionManager {
             return;
         }
 
-        // ── Node header → drag + select
-        const headerEl = target.closest('.ne-node-header');
+        // ── Node header → drag + select. A table card's header counts too, so
+        // tables and operator nodes select and move as one group.
+        const headerEl = target.closest('.ne-node-header, .tf-canvas-card > .accordion');
         if (headerEl && !this.spaceHeld) {
-            const nodeEl = headerEl.closest('.ne-node');
+            const nodeEl = headerEl.closest('[data-node-id]');
             if (nodeEl) {
                 const nodeId = nodeEl.dataset.nodeId;
                 // If Ctrl/Meta held, add to selection; otherwise select this node
@@ -189,6 +204,7 @@ class NodeInteractionManager {
         const isCanvas = target === this.container
             || target.id === 'nodeCanvasLayer'
             || target.id === 'nodeHtmlLayer'
+            || target.classList.contains('tf-sheet-frame')
             || target.closest('#nodeEditorViewport') === this.container;
 
         if (isCanvas && e.button === 0) {
@@ -224,6 +240,7 @@ class NodeInteractionManager {
             vp.y = this.panStart.vpY + (e.clientY - this.panStart.y);
             window.nodeCanvasRenderer.markBgDirty();
             window.nodeCanvasRenderer.markStaticDirty();
+            this._emit('onViewportChange');
             return;
         }
 
@@ -239,7 +256,9 @@ class NodeInteractionManager {
                     el.style.top  = newY + 'px';
                 }
             });
+            this._dragMoved = true;
             window.nodeCanvasRenderer.markStaticDirty();
+            this._emit('onNodesMoving', this.dragGroup.map(g => g.nodeId));
             return;
         }
 
@@ -266,9 +285,13 @@ class NodeInteractionManager {
         }
 
         if (this.dragGroup.length > 0) {
+            const moved = this.dragGroup.map(g => g.nodeId);
+            const didMove = this._dragMoved;
             this.draggedNode = null;
             this.dragGroup   = [];
+            this._dragMoved  = false;
             window.nodeCanvasRenderer.markStaticDirty();
+            if (didMove) this._emit('onNodesMoved', moved);
             if (typeof window.saveNodeEditorState === 'function') window.saveNodeEditorState();
             return;
         }
@@ -303,8 +326,11 @@ class NodeInteractionManager {
             return;
         }
 
+        // With cells selected in a table, Delete and Ctrl+A belong to the grid.
+        const cellsSelected = (window.selectedCells || []).length > 0;
+
         // Delete / Backspace → remove selected nodes, or selected wire if no nodes selected
-        if ((e.key === 'Delete' || e.key === 'Backspace') &&
+        if ((e.key === 'Delete' || e.key === 'Backspace') && !cellsSelected &&
             !e.target.matches('input,textarea,[contenteditable="true"]')) {
             const hasSelectedNodes = window.nodeGraphManager.getSelectedNodes().length > 0;
             if (hasSelectedNodes) {
@@ -316,7 +342,7 @@ class NodeInteractionManager {
         }
 
         // Ctrl+A → select all
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' &&
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !cellsSelected &&
             !e.target.matches('input,textarea,[contenteditable="true"]')) {
             e.preventDefault();
             this._selectAllNodes();
@@ -342,6 +368,7 @@ class NodeInteractionManager {
     // ── Node Drag ───────────────────────────────────────────────────────────────
 
     _startNodeDrag(nodeEl, e) {
+        this._dragMoved = false;
         const cp = this.screenToCanvas(e.clientX, e.clientY);
         // Build drag group from all currently selected nodes
         const selectedNodes = Object.values(window.NodeGraph.nodes).filter(n => n.selected);
@@ -366,7 +393,7 @@ class NodeInteractionManager {
     // ── Wire Connection ─────────────────────────────────────────────────────────
 
     _startWire(portEl, e) {
-        const nodeEl = portEl.closest('.ne-node');
+        const nodeEl = portEl.closest('[data-node-id]');
         if (!nodeEl) return;
         this._clearWireSelection();
         const cp = this.screenToCanvas(e.clientX, e.clientY);
@@ -382,7 +409,7 @@ class NodeInteractionManager {
         const wp = this.wireInProgress;
         if (!wp) return;
 
-        const targetNodeEl = targetPortEl.closest('.ne-node');
+        const targetNodeEl = targetPortEl.closest('[data-node-id]');
         if (!targetNodeEl) return;
 
         const targetNodeId = targetNodeEl.dataset.nodeId;
@@ -479,7 +506,7 @@ class NodeInteractionManager {
         window.nodeGraphManager.deselectAll();
         Object.values(window.NodeGraph.nodes).forEach(node => {
             const nw = node.width || 280;
-            const nh = node.collapsed ? 42 : 300;
+            const nh = node.collapsed ? 42 : (node.height || 300);
             if (node.x < cx2 && node.x + nw > cx1 && node.y < cy2 && node.y + nh > cy1) {
                 node.selected = true;
             }
@@ -492,14 +519,17 @@ class NodeInteractionManager {
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     _updateSelectionVisuals() {
-        document.querySelectorAll('.ne-node').forEach(el => {
+        document.querySelectorAll('[data-node-id]').forEach(el => {
             const node = window.NodeGraph.nodes[el.dataset.nodeId];
             el.classList.toggle('selected', !!(node && node.selected));
         });
+        this._emit('onSelectionChange');
     }
 
     _deleteSelectedNodes() {
-        const selected = window.nodeGraphManager.getSelectedNodes();
+        // A selected table card is not deleted from here: a table belongs to
+        // its sheet, and removing it is a table edit with its own undo.
+        const selected = window.nodeGraphManager.getSelectedNodes().filter(n => !n.tableBacked);
         if (selected.length === 0) return;
 
         selected.forEach(node => {
@@ -589,7 +619,7 @@ class NodeInteractionManager {
         e.preventDefault();
         e.stopPropagation();
 
-        const nodeEl   = portEl.closest('.ne-node');
+        const nodeEl   = portEl.closest('[data-node-id]');
         if (!nodeEl) return;
 
         const sourceNodeId = nodeEl.dataset.nodeId;
@@ -600,7 +630,7 @@ class NodeInteractionManager {
     }
 
     _showPortMenu(clientX, clientY, sourceNodeId, sourcePortId) {
-        const operatorTypes = ['filter', 'vlookup', 'formula', 'join', 'api'];
+        const operatorTypes = ['filter', 'vlookup', 'formula', 'join', 'append', 'api'];
         const menu = document.createElement('div');
         menu.className = 'ne-port-menu';
         menu.setAttribute('role', 'menu');
@@ -637,6 +667,12 @@ class NodeInteractionManager {
                     );
                     if (!taken) targets.push({ nodeId: n.id, portId, label: `${n.label} — ${portId === 'join-in-left' ? 'Left' : 'Right'} input` });
                 });
+            } else if (n.nodeType === 'append') {
+                // Append takes any number of tables into one port.
+                const alreadyWired = Object.values(window.NodeGraph.wires).some(
+                    w => w.targetNodeId === n.id && w.sourceNodeId === sourceNodeId
+                );
+                if (!alreadyWired) targets.push({ nodeId: n.id, portId: 'append-in', label: n.label });
             } else {
                 const inHeader = n.headers.find(h => h.direction === 'in');
                 if (!inHeader) return;

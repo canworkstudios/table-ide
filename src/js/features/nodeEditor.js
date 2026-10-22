@@ -1,203 +1,39 @@
 // ===================================================================================
 // NODE EDITOR; Main Controller
-//   — Mode toggle (mirrors labMode pattern)
-//   — Table ↔ Node sync (enable loads sheets as nodes; disable writes nodes back)
-//   — DOM rendering for node cards
-//   — Inline cell editing with copy-on-write
-//   — History integration
+//   — Mode toggle (now an alias for the table canvas)
+//   — DOM rendering for operator node cards
+//   — Build Table, history integration, toolbar wiring
+//
+// Table nodes are the table cards themselves (see canvasGraph.js). Their data
+// is read from the live table at run time, so there is no copy to load on
+// enable or write back on disable.
 // ===================================================================================
 
 window.nodeEditorEnabled   = false;
-window._nodeEditorSnapshot = null;  // persists graph + cellStore across mode switches
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Enable / Disable
 // ──────────────────────────────────────────────────────────────────────────────
 
+// The node editor no longer has its own view. Tables and operator nodes share
+// the table canvas (tableCanvas.js + canvasGraph.js), so "Node Editor on" means
+// "canvas on". These stay as the public entry points because lab mode, draw
+// mode, the equation editor and the ?view=node-editor deep link all call them.
 function enableNodeEditor() {
     if (window.nodeEditorEnabled) return;
-    window.nodeEditorEnabled = true;
-
-    $('#nodeEditorToggle').addClass('active').attr('title', 'Node Editor: ON');
-    $('#selectToolToggle').removeClass('active');
-
-    // Exit lab mode if active
-    if (window.labModeEnabled && typeof disableLab === 'function') {
-        disableLab();
-    }
-
-    // Save the current sheet state so it survives the mode switch
-    if (typeof _saveActiveSheetState === 'function') _saveActiveSheetState();
-
-    // Swap views — collapse side panels so node editor gets full width
-    $('.table-wrapper').hide();
-    $('#sheetTabBar').hide();
-    $('.table-ide-left-panel, .table-ide-right-panel').hide();
-    $('#nodeEditorCanvas').css('display', 'flex');
-    document.body.classList.add('node-editor-active');
-
-    // Restore previous session if one exists; otherwise build fresh from sheets
-    if (window._nodeEditorSnapshot) {
-        _restoreSnapshot(window._nodeEditorSnapshot);
-    } else {
-        _loadSheetsAsNodes();
-    }
-
-    // Boot canvas renderer
-    window.nodeCanvasRenderer.init();
-    window.nodeCanvasRenderer.start();
-
-    // Boot interaction manager
-    const viewport = document.getElementById('nodeEditorViewport');
-    if (viewport) window.nodeInteractionManager.init(viewport);
-
-    // Fit all nodes into view after one paint
-    setTimeout(() => {
-        const vp = document.getElementById('nodeEditorViewport');
-        if (vp) window.nodeGraphManager.fitToView(vp.clientWidth, vp.clientHeight);
-        window.nodeCanvasRenderer.markBgDirty();
-        window.nodeCanvasRenderer.markStaticDirty();
-    }, 80);
-
-    $.toast({ heading: 'Node Editor', text: 'Node Editor activated', icon: 'info', loader: false, stack: false });
+    if (window.labModeEnabled && typeof disableLab === 'function') disableLab();
+    if (window.TableCanvas) window.TableCanvas.setOn(true);
 }
 
 function disableNodeEditor() {
     if (!window.nodeEditorEnabled) return;
-    window.nodeEditorEnabled = false;
-
-    $('#nodeEditorToggle').removeClass('active').attr('title', 'Node Editor: OFF');
-    $('#selectToolToggle').addClass('active');
-
-    // Sync table-type node edits back to sheets
-    _syncNodesToSheets();
-
-    // Save full graph + cellStore so we can restore on re-entry
-    window._nodeEditorSnapshot = {
-        graph:     window.nodeGraphManager.snapshot(),
-        cellStore: window.cellStoreManager.snapshot()
-    };
-
-    // Tear down canvas + interactions
-    window.nodeCanvasRenderer.stop();
-    window.nodeInteractionManager.destroy();
-
-    // Close config panel if open
-    if (typeof window.nodeConfigPanel !== 'undefined') window.nodeConfigPanel.close();
-
-    // Clear HTML layer
-    const htmlLayer = document.getElementById('nodeHtmlLayer');
-    if (htmlLayer) htmlLayer.innerHTML = '';
-
-    // Clear live graph (snapshot is the source of truth now)
-    window.NodeGraph.nodes = {};
-    window.NodeGraph.wires = {};
-    window.cellStoreManager.clear();
-
-    // Swap views back — restore side panels
-    $('#nodeEditorCanvas').hide();
-    $('.table-wrapper').show();
-    $('#sheetTabBar').show();
-    $('.table-ide-left-panel, .table-ide-right-panel').show();
-    document.body.classList.remove('node-editor-active');
-
-    $.toast({ heading: 'Node Editor', text: 'Returned to table view', icon: 'info', loader: false, stack: false });
+    if (window.TableCanvas) window.TableCanvas.setOn(false);
 }
 
 function toggleNodeEditor() {
     if (window.nodeEditorEnabled) disableNodeEditor();
     else enableNodeEditor();
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Table → Nodes  (on enable: read existing sheets, populate CellStore + NodeGraph)
-// ──────────────────────────────────────────────────────────────────────────────
-
-function _loadSheetsAsNodes() {
-    const htmlLayer = document.getElementById('nodeHtmlLayer');
-    if (!htmlLayer) return;
-
-    htmlLayer.innerHTML = '';
-    window.NodeGraph.nodes = {};
-    window.NodeGraph.wires = {};
-    window.cellStoreManager.clear();
-
-    const COLS = 3;
-    let idx = 0;
-
-    window.sheets.forEach(sheet => {
-        let html = '';
-        if (sheet.id === window.activeSheetId) {
-            html = $('#tableContainer').html();
-        } else {
-            html = sheet.containerHtml || sheet.rawHtml || '';
-        }
-
-        const cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(html, { ALLOW_DATA_ATTR: true }) : html;
-        const $temp  = $('<div>').html(cleanHtml);
-        const $tables = $temp.find('table');
-        $tables.each(function (tableIndex) {
-            const tableId = this.getAttribute('data-table-ide-table-id') || ('table-' + crypto.randomUUID().slice(0, 8));
-            this.setAttribute('data-table-ide-table-id', tableId);
-            const headers = _headersFromTable($(this));
-            const x = 50 + (idx % COLS) * 340;
-            const y = 50 + Math.floor(idx / COLS) * 320;
-            const label = $tables.length > 1 ? `${sheet.name} · Table ${tableIndex + 1}` : sheet.name;
-            const nodeId = window.nodeGraphManager.addNode(label, x, y, headers);
-            const node = window.NodeGraph.nodes[nodeId];
-            node.sourceSheetId = sheet.id;
-            node.sourceTableId = tableId;
-            node.sourceTableIndex = tableIndex;
-            renderNodeDom(nodeId);
-            idx++;
-        });
-        // Persist stable table identities back into the sheet source.
-        if ($tables.length) {
-            sheet.rawHtml = $temp.html();
-            sheet.containerHtml = null;
-        }
-    });
-}
-
-function _headersFromTable($table) {
-    const headers = [];
-    const $rows = $table.find('tr');
-    $rows.first().find('td, th').each(function () {
-        headers.push({ portId: 'port-' + crypto.randomUUID().slice(0, 8), label: $(this).text().trim() || 'Column', cellIds: [], direction: 'inout' });
-    });
-    $rows.slice(1).each(function () {
-        $(this).find('td, th').each(function (colIdx) {
-            if (colIdx < headers.length) headers[colIdx].cellIds.push(window.cellStoreManager.create($(this).text().trim()));
-        });
-    });
-    return headers;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Snapshot restore  (re-entry after switching away from node editor)
-// ──────────────────────────────────────────────────────────────────────────────
-
-function _restoreSnapshot(snapshot) {
-    const htmlLayer = document.getElementById('nodeHtmlLayer');
-    if (!htmlLayer) return;
-
-    htmlLayer.innerHTML = '';
-
-    // Restore graph data model
-    window.nodeGraphManager.restore(snapshot.graph);
-
-    // Restore cell store
-    window.cellStoreManager.restore(snapshot.cellStore);
-
-    // Re-render every node card from restored state
-    Object.keys(window.NodeGraph.nodes).forEach(nodeId => {
-        renderNodeDom(nodeId);
-    });
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Nodes → Tables  (on disable: write node state back to sheets)
-// ──────────────────────────────────────────────────────────────────────────────
 
 // Shared helper: read one cell value from a header at row r
 // Columnar headers (operator output): h.values[r]
@@ -207,40 +43,6 @@ function _nodeVal(h, r, csm) {
     const id = (h.cellIds || [])[r];
     const cell = id ? csm.get(id) : null;
     return cell ? cell.value : '';
-}
-
-function _syncNodesToSheets() {
-    const csm = window.cellStoreManager;
-    const bySheet = {};
-    Object.values(window.NodeGraph.nodes).forEach(node => {
-        if (node.sourceSheetId) (bySheet[node.sourceSheetId] ||= []).push(node);
-    });
-    Object.entries(bySheet).forEach(([sheetId, nodes]) => {
-        const sheet = window.sheets.find(s => s.id === sheetId);
-        if (!sheet) return;
-        const source = sheet.id === window.activeSheetId ? $('#tableContainer').html() : (sheet.rawHtml || sheet.containerHtml || '');
-        const $host = $('<div>').html(source);
-        nodes.sort((a, b) => (a.sourceTableIndex || 0) - (b.sourceTableIndex || 0)).forEach(node => {
-            let html = `<table class="tablecoil crosshair-table" data-table-ide-table-id="${_esc(node.sourceTableId || '')}"><thead><tr>`;
-        node.headers.forEach(h => { html += `<th>${_esc(h.label)}</th>`; });
-        html += '</tr></thead><tbody>';
-
-        // maxRows: check h.values (columnar) or h.cellIds (CellStore) length
-        const maxRows = node.headers.reduce((m, h) => Math.max(m, (h.values || h.cellIds || []).length), 0);
-        for (let r = 0; r < maxRows; r++) {
-            html += '<tr>';
-            node.headers.forEach(h => { html += `<td>${_esc(_nodeVal(h, r, csm))}</td>`; });
-            html += '</tr>';
-        }
-        html += '</tbody></table>';
-
-            let $target = node.sourceTableId ? $host.find(`table[data-table-ide-table-id="${node.sourceTableId}"]`).first() : $();
-            if (!$target.length) $target = $host.find('table').eq(node.sourceTableIndex || 0);
-            if ($target.length) $target.replaceWith(html); else $host.append(html);
-        });
-        sheet.rawHtml       = $host.html();
-        sheet.containerHtml = null; // force re-parse from rawHtml on next activate
-    });
 }
 
 function _esc(str) {
@@ -260,6 +62,9 @@ const MAX_VISIBLE_ROWS = 8;
 function renderNodeDom(nodeId) {
     const node = window.NodeGraph.nodes[nodeId];
     if (!node) return;
+    // A table node IS its table card on the canvas; there is no separate
+    // node DOM to draw, and removing "the old one" would delete the card.
+    if (node.tableBacked) return;
 
     const htmlLayer = document.getElementById('nodeHtmlLayer');
     if (!htmlLayer) return;
@@ -414,139 +219,27 @@ function renderNodeDom(nodeId) {
             <div class="ne-node-data-rows">${dataRowsHtml}</div>
         </div>`;
 
-    // ── Inline edit on double-click (table nodes only)
-    if (!isOperator) {
-        el.querySelectorAll('.ne-cell-value').forEach(cellEl => {
-            cellEl.addEventListener('dblclick', function (e) {
-                e.stopPropagation();
-                const cellId = this.dataset.cellId;
-                if (!cellId) return;
-                _startInlineEdit(this, cellId, nodeId);
-            });
-        });
-    }
-
     htmlLayer.appendChild(el);
 }
 
 window.renderNodeDom = renderNodeDom;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Inline Cell Editing (copy-on-write)
-// ──────────────────────────────────────────────────────────────────────────────
-
-function _startInlineEdit(cellEl, cellId, nodeId) {
-    const current = window.cellStoreManager.get(cellId);
-    if (!current) return;
-
-    const input = document.createElement('input');
-    input.type      = 'text';
-    input.value     = current.value;
-    input.className = 'ne-cell-edit-input';
-
-    const finish = () => {
-        const newVal  = input.value;
-        const ownedId = window.cellStoreManager.deref(cellId);
-        if (!ownedId) return;
-
-        window.cellStoreManager.update(ownedId, newVal);
-
-        // If deref created a new UUID, update all header cellIds that referenced the old one
-        if (ownedId !== cellId) {
-            Object.values(window.NodeGraph.nodes).forEach(n => {
-                n.headers.forEach(h => {
-                    const i = h.cellIds.indexOf(cellId);
-                    if (i !== -1) h.cellIds[i] = ownedId;
-                });
-            });
-        }
-
-        // Re-render all nodes that contain this cell
-        Object.keys(window.NodeGraph.nodes).forEach(nId => {
-            const n = window.NodeGraph.nodes[nId];
-            const touched = n.headers.some(h => h.cellIds.includes(ownedId) || h.cellIds.includes(cellId));
-            if (touched) renderNodeDom(nId);
-        });
-
-        if (typeof window.saveNodeEditorState === 'function') window.saveNodeEditorState();
-    };
-
-    let finished = false;
-    const safeFinish = () => { if (!finished) { finished = true; finish(); } };
-
-    input.addEventListener('blur',    safeFinish);
-    input.addEventListener('keydown', e => {
-        if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
-        if (e.key === 'Escape') {
-            finished = true;
-            // Cancel — re-render without saving
-            const nodeEl = document.querySelector(`[data-node-id="${nodeId}"]`);
-            const parentHtmlLayer = document.getElementById('nodeHtmlLayer');
-            if (nodeEl && parentHtmlLayer) {
-                nodeEl.remove();
-                renderNodeDom(nodeId);
-            }
-        }
-    });
-
-    cellEl.replaceWith(input);
-    input.focus();
-    input.select();
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Add current sheet as an extra node (toolbar button: "Add Sheet")
-// ──────────────────────────────────────────────────────────────────────────────
-
+// Every table on the canvas is already a node, so this only has to make sure
+// the canvas is on and the graph has caught up. Kept for the MCP
+// `add_sheet_node` verb.
 function addCurrentSheetAsNode() {
-    if (!window.activeSheetId) {
-        $.toast({ heading: 'Node Editor', text: 'No active sheet', icon: 'warning', loader: false, stack: false });
-        return;
-    }
-
-    const sheet = window.sheets.find(s => s.id === window.activeSheetId);
-    if (!sheet) return;
-
-    const html    = $('#tableContainer').html();
-    const $temp   = $('<div>').html(html);
-    const $tables = $temp.find('table');
-    if (!$tables.length) {
-        $.toast({ heading: 'Node Editor', text: 'No table in current sheet', icon: 'warning', loader: false, stack: false });
-        return;
-    }
-
-    let added = 0;
-    $tables.each(function (tableIndex) {
-        const tableId = this.getAttribute('data-table-ide-table-id') || ('table-' + crypto.randomUUID().slice(0, 8));
-        this.setAttribute('data-table-ide-table-id', tableId);
-        if (Object.values(window.NodeGraph.nodes).some(n => n.sourceSheetId === window.activeSheetId && (n.sourceTableId === tableId || (!n.sourceTableId && n.sourceTableIndex === tableIndex)))) return;
-        const count = Object.keys(window.NodeGraph.nodes).length;
-        const nodeId = window.nodeGraphManager.addNode(`${sheet.name} · Table ${tableIndex + 1}`, 50 + (count % 3) * 340, 50 + Math.floor(count / 3) * 320, _headersFromTable($(this)));
-        Object.assign(window.NodeGraph.nodes[nodeId], { sourceSheetId: window.activeSheetId, sourceTableId: tableId, sourceTableIndex: tableIndex });
-        renderNodeDom(nodeId);
-        added++;
-    });
-    sheet.rawHtml = $temp.html();
-    sheet.containerHtml = null;
-
-    window.nodeCanvasRenderer.markStaticDirty();
-    if (typeof window.saveNodeEditorState === 'function') window.saveNodeEditorState();
-    $.toast({ heading: 'Node Editor', text: added ? `${added} table node${added === 1 ? '' : 's'} added` : 'Every table in this sheet is already present', icon: added ? 'success' : 'info', loader: false, stack: false });
+    enableNodeEditor();
+    if (window.CanvasGraph) window.CanvasGraph.syncTableNodes();
 }
+window.addCurrentSheetAsNode = addCurrentSheetAsNode;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Build Table from selected node (toolbar button: "Build Table")
 // ──────────────────────────────────────────────────────────────────────────────
 
-function buildTableFromSelectedNode() {
-    const selected = window.nodeGraphManager.getSelectedNodes();
-    if (selected.length === 0) {
-        $.toast({ heading: 'Node Editor', text: 'Select a node first', icon: 'warning', loader: false, stack: false });
-        return;
-    }
-
-    const node    = selected[0];
-    const csm     = window.cellStoreManager;
+// A node's output columns as table HTML. Shared by Build Table and Combine.
+function nodeOutputTableHtml(node) {
+    const csm = window.cellStoreManager;
 
     // maxRows: check h.values (columnar) or h.cellIds (CellStore) length
     const maxRows = node.headers.reduce((m, h) => Math.max(m, (h.values || h.cellIds || []).length), 0);
@@ -562,7 +255,19 @@ function buildTableFromSelectedNode() {
         outputHeaders.forEach(h => { html += `<td>${_esc(_nodeVal(h, r, csm))}</td>`; });
         html += '</tr>';
     }
-    html += '</tbody></table>';
+    return html + '</tbody></table>';
+}
+window.nodeOutputTableHtml = nodeOutputTableHtml;
+
+function buildTableFromSelectedNode() {
+    const selected = window.nodeGraphManager.getSelectedNodes();
+    if (selected.length === 0) {
+        $.toast({ heading: 'Node Editor', text: 'Select a node first', icon: 'warning', loader: false, stack: false });
+        return;
+    }
+
+    const node = selected[0];
+    const html = nodeOutputTableHtml(node);
 
     if (typeof addSheet === 'function') {
         addSheet(node.label + ' (node)', html);
@@ -575,11 +280,7 @@ function buildTableFromSelectedNode() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 function fitNodeView() {
-    const vp = document.getElementById('nodeEditorViewport');
-    if (!vp) return;
-    window.nodeGraphManager.fitToView(vp.clientWidth, vp.clientHeight);
-    window.nodeCanvasRenderer.markBgDirty();
-    window.nodeCanvasRenderer.markStaticDirty();
+    if (window.TableCanvas) window.TableCanvas.fitToContent();
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -621,7 +322,6 @@ function initNodeEditor() {
     $('#neExit').on('click',           disableNodeEditor);
     $('#neFitView').on('click',        fitNodeView);
     $('#neBuildTable').on('click',     buildTableFromSelectedNode);
-    $('#neAddFromSheet').on('click',   addCurrentSheetAsNode);
     $('#neRunGraph').on('click',       () => window.nodeExecutor.run());
     $('#neResetRun').on('click',       () => window.nodeExecutor.resetRunState());
 

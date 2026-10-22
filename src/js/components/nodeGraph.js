@@ -137,9 +137,12 @@ class NodeGraphManager {
     // ── Port World Position (canvas-space coordinates for wire rendering) ───────
 
     getPortWorldPosition(nodeId, portId) {
-        const portEl = document.querySelector(
-            `[data-node-id="${nodeId}"] [data-port-id="${portId}"]`
-        );
+        // A table card has one output connector however many columns it has,
+        // so a wire naming a specific column (the MCP connect verb picks one)
+        // is drawn from that connector.
+        const portEl = document.querySelector(`[data-node-id="${nodeId}"] [data-port-id="${portId}"]`)
+            || (this.graph.nodes[nodeId]?.tableBacked
+                ? document.querySelector(`[data-node-id="${nodeId}"] .ne-port-out`) : null);
         if (!portEl) return null;
 
         const nodeEl = document.querySelector(`[data-node-id="${nodeId}"]`);
@@ -182,7 +185,7 @@ class NodeGraphManager {
 
         nodes.forEach(node => {
             const nw = node.width || 280;
-            const nh = node.collapsed ? 42 : 300;
+            const nh = node.collapsed ? 42 : (node.height || 300);
             minX = Math.min(minX, node.x);
             minY = Math.min(minY, node.y);
             maxX = Math.max(maxX, node.x + nw);

@@ -6,18 +6,20 @@
     const MAX_R = 12, MAX_C = 10;
     let $pop = null;
 
-    // Next unused tifany index across all tables currently on the sheet.
-    function nextTableIdeIndex() {
-        let max = -1;
-        $('#tableContainer table[data-table-ide-id]').each(function () {
-            const m = /^t-(\d+)$/.exec($(this).attr('data-table-ide-id') || '');
-            if (m) max = Math.max(max, parseInt(m[1], 10));
-        });
-        return max + 1;
+    // A drawn table joins the active sheet, so it is named after that sheet
+    // (t-<sheet>-new, t-<sheet>-new-2, …) and checked against every sheet's
+    // ids, not only the tables on screen.
+    function nextTableIdeId() {
+        const sheet = (window.sheets || []).find(s => s.id === window.activeSheetId);
+        const slug = window.tableIdSlug ? window.tableIdSlug(sheet && sheet.name) : 'sheet';
+        if (window.allocTableId) return window.allocTableId(`t-${slug}-new`);
+        let n = 0;
+        while ($(`#tableContainer table[data-table-ide-id="t-${slug}-new-${n}"]`).length) n++;
+        return `t-${slug}-new-${n}`;
     }
 
-    function buildTableHtml(rows, cols, tifIdx) {
-        let html = `<table class="tablecoil crosshair-table" data-table-ide-id="t-${tifIdx}">`;
+    function buildTableHtml(rows, cols, tableId) {
+        let html = `<table class="tablecoil crosshair-table" data-table-ide-id="${tableId}">`;
         html += '<thead><tr>';
         for (let c = 0; c < cols; c++) html += `<th>Column ${c + 1}</th>`;
         html += '</tr></thead><tbody>';
@@ -36,9 +38,9 @@
 
         if (typeof window.saveCurrentState === 'function') window.saveCurrentState();
 
-        const tifIdx = nextTableIdeIndex();
+        const tableId = nextTableIdeId();
         const tableCount = $('#tableContainer .accordion').length + 1;
-        const tableHtml = buildTableHtml(rows, cols, tifIdx);
+        const tableHtml = buildTableHtml(rows, cols, tableId);
 
         const block =
             `<button class="accordion active"><b>Table ${tableCount}</b></button>` +
@@ -50,7 +52,7 @@
 
         $('#tableContainer').append(clean);
 
-        const newTable = $('#tableContainer table[data-table-ide-id="t-' + tifIdx + '"]')[0];
+        const newTable = $(`#tableContainer table[data-table-ide-id="${tableId}"]`)[0];
         window.currentTable = newTable;
 
         // .panel starts display:none (accordion collapsed). A freshly drawn table must be

@@ -1318,9 +1318,8 @@ $(function () {
     });
 
     $('#fileInput').on('change', function () {
-        const file = this.files[0];
-        if (file && typeof handleFileLoad === 'function') {
-            handleFileLoad(file);
+        if (this.files.length && typeof handleFilesLoad === 'function') {
+            handleFilesLoad(this.files);
         }
     });
 
@@ -1788,6 +1787,7 @@ $(function () {
                 // Patch existing sheet — no new tab created
                 var sheet = window.sheets[i];
                 sheet.name   = data.name || sheet.name;
+                if (typeof stampTableIds === 'function') rawHtml = stampTableIds(rawHtml, sheet);
                 sheet.rawHtml = rawHtml;
                 sheet.containerHtml = null; // force re-render on next activate
 
@@ -1799,6 +1799,10 @@ $(function () {
                     if (typeof setupTableInteraction === 'function') { setupTableInteraction(); }
                     if (typeof window.saveCurrentState === 'function') { window.saveCurrentState(); }
                     if (typeof renderSheetTabs === 'function')       { renderSheetTabs(); }
+                } else if (window.SheetCanvas && window.SheetCanvas.isMounted()) {
+                    // Not active, but visible on the all-sheets canvas: redraw it too.
+                    var _n = Math.max(1, parseInt($('#buttonIndex').val(), 10) || 1);
+                    window.SheetCanvas.replaceSheetCards(sheet.id, buildTableCardsHtml(rawHtml, _n) || '');
                 }
             } else {
                 // Extra sheet from new fenced block — push directly, skip addSheet()
@@ -1806,7 +1810,10 @@ $(function () {
                     _saveActiveSheetState();
                 }
                 var id = 'sheet-' + (++window._sheetCounter);
-                window.sheets.push({ id: id, name: data.name || ('Sheet ' + window._sheetCounter), rawHtml: rawHtml, containerHtml: null });
+                var _name = data.name || ('Sheet ' + window._sheetCounter);
+                if (typeof stampTableIds === 'function') rawHtml = stampTableIds(rawHtml, { name: _name });
+                window.sheets.push({ id: id, name: _name, rawHtml: rawHtml, containerHtml: null });
+                if (window.SheetCanvas && window.SheetCanvas.isMounted()) window.SheetCanvas.ensureSheetCards(id);
                 window.lastParsedHtml = rawHtml;
                 if (typeof renderSheetTabs === 'function') { renderSheetTabs(); }
             }

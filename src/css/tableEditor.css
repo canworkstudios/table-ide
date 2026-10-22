@@ -1388,7 +1388,39 @@ body.tf-no-select { user-select: none; -webkit-user-select: none; }
 }
 .tf-canvas-card.tf-dragging > .accordion { cursor: grabbing; }
 
-/* On the canvas a panel is never the accordion's collapsed box. */
+/* One frame per sheet when every sheet is mounted. It sits under the cards and
+   only its label takes the pointer, so presses inside the frame still reach the
+   canvas (pan) or a card (select). */
+.tf-sheet-frame {
+    position: absolute;
+    border: 1px dashed var(--t-border, #d8dbe0);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--t-bg-surface, #fff) 35%, transparent);
+    pointer-events: none;
+}
+.tf-sheet-frame.is-active {
+    border-style: solid;
+    border-color: var(--t-accent, #2563eb);
+}
+.tf-sheet-frame-label {
+    position: absolute;
+    top: 3px;
+    left: 10px;
+    max-width: calc(100% - 20px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--t-text-muted, #6b7280);
+    pointer-events: auto;
+    cursor: grab;
+    user-select: none;
+}
+.tf-sheet-frame.is-active .tf-sheet-frame-label { color: var(--t-accent, #2563eb); }
+
+/* A card opens with its table shown; clicking the header collapses it. */
 .tf-canvas-card > .panel {
     display: block;
     max-height: none;
@@ -1709,3 +1741,28 @@ body.gx-ruler-sweeping * {
     user-select: none;
     cursor: default !important;
 }
+
+/* ==================== CANVAS + NODES (one surface) ====================
+   The canvas surface is #nodeHtmlLayer while the canvas is on, and that layer
+   is pointer-events:none so empty space falls through to the viewport (marquee
+   and pan). Cards opt back in, the way .ne-node does. */
+.tf-canvas-surface > .tf-canvas-card { pointer-events: auto; }
+
+/* The node toolbar only means something while tables are on the canvas. */
+body:not(.tf-canvas-active) .node-editor-header { display: none; }
+
+/* A table's one output connector, on the card's right edge beside its header. */
+.tf-canvas-card > .tf-card-port {
+    position: absolute;
+    top: 14px;
+    right: -7px;
+}
+
+/* Selected with a marquee, Ctrl+A, or a header click: same accent as a node. */
+.tf-canvas-card.selected {
+    border-color: var(--t-primary, #1a73e8);
+    box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.25), 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* The node renderer paints the dotted ground on #nodeCanvasLayer now. */
+.tf-canvas-viewport { touch-action: none; }

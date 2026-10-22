@@ -497,6 +497,42 @@ window.nodeExecutor = (function () {
         ]);
     }
 
+    // ── append — stack every wired table, columns matched by label ────────────
+    //
+    //   Reads each wire into append-in separately, in the order the wires were
+    //   made, so the output order is the order the user connected (or that
+    //   Combine connected) them. Columns are the union of labels in first-seen
+    //   order; a table missing a column contributes blanks for it.
+
+    function _handleAppend(node) {
+        const wires = Object.values(window.NodeGraph.wires).filter(
+            w => w.targetNodeId === node.id && w.targetPortId === 'append-in'
+        );
+        if (!wires.length) throw new Error('Append: connect at least one table');
+
+        const withSource = node.config?.sourceColumn !== false;
+        const labels = [];
+        const parts = wires.map(w => {
+            const cols = _readSourcePort(w.sourceNodeId, w.sourcePortId);
+            cols.forEach(c => { if (!labels.includes(c.label)) labels.push(c.label); });
+            const src = window.NodeGraph.nodes[w.sourceNodeId];
+            return { cols, name: src ? src.label : '', rows: cols.reduce((m, c) => Math.max(m, c.values.length), 0) };
+        });
+
+        const out = labels.map(label => ({
+            label,
+            values: parts.flatMap(p => {
+                const col = p.cols.find(c => c.label === label);
+                return col ? col.values.concat(Array(p.rows - col.values.length).fill('')) : Array(p.rows).fill('');
+            })
+        }));
+        if (withSource) {
+            const srcLabel = labels.includes('Source') ? 'Source Table' : 'Source';
+            out.unshift({ label: srcLabel, values: parts.flatMap(p => Array(p.rows).fill(p.name)) });
+        }
+        _writeJoinOutput(node, out);
+    }
+
     // ── Join mode implementations ──────────────────────────────────────────────
 
     // Stack: append all rows, columns matched by name — mismatched columns get blanks
@@ -710,6 +746,9 @@ window.nodeExecutor = (function () {
     // ── Run ───────────────────────────────────────────────────────────────────
 
     async function run() {
+        // Table nodes read their columns from the live tables on the canvas,
+        // so pick up any edit made since the last run.
+        if (window.CanvasGraph) window.CanvasGraph.syncTableNodes();
         const nodes = window.NodeGraph.nodes;
         const wires = window.NodeGraph.wires;
 
@@ -758,6 +797,7 @@ window.nodeExecutor = (function () {
                         case 'formula': _handleFormula(node, inputMap); break;
                         case 'api':     await _handleApi(node);         break;
                         case 'join':    _handleJoin(node);              break;
+                        case 'append':  _handleAppend(node);            break;
                         case 'diff':    _handleDiff(node);              break;
                         case 'condition': _handleCondition(node, inputMap); break;
                         default: break;

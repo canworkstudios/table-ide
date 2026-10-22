@@ -12,6 +12,7 @@ window.NodeTypes = {
     //  formula  — add a computed column using an expression
     //  api      — fetch external JSON and expose fields as output columns
     //  join     — combine two tables (stack, lateral paste, or key-based joins)
+    //  append   — stack ANY number of tables into one, columns matched by name
 
     types: {
         table: {
@@ -139,6 +140,23 @@ window.NodeTypes = {
             defaultHeaders: [
                 { label: 'Left Table',  portId: 'join-in-left',  direction: 'in', cellIds: [] },
                 { label: 'Right Table', portId: 'join-in-right', direction: 'in', cellIds: [] }
+            ]
+        },
+        // Join takes exactly two inputs, so combining ten tables meant nine
+        // chained joins. Append takes every wire into its one input port, in
+        // the order they were connected. This is what "Combine" builds.
+        append: {
+            label:       'Append',
+            color:       '#14b8a6',
+            cssVar:      '--ne-type-append',
+            icon:        '⊕',
+            description: 'Stack every connected table into one, columns matched by name',
+            defaultConfig: {
+                sourceColumn: true   // add a Source column naming each row's table
+            },
+            defaultPorts: 'in',
+            defaultHeaders: [
+                { label: 'Tables', portId: 'append-in', direction: 'in', cellIds: [] }
             ]
         }
     },

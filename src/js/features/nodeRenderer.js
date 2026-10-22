@@ -275,7 +275,7 @@ class NodeCanvasRenderer {
         let maxX = -Infinity, maxY = -Infinity;
         nodes.forEach(n => {
             const nw = n.width || 280;
-            const nh = n.collapsed ? 42 : 220;
+            const nh = n.collapsed ? 42 : (n.height || 220);
             minX = Math.min(minX, n.x);
             minY = Math.min(minY, n.y);
             maxX = Math.max(maxX, n.x + nw);
@@ -330,7 +330,7 @@ class NodeCanvasRenderer {
         const isOp = n => window.NodeTypes && window.NodeTypes.isOperator(n.nodeType);
         nodes.forEach(n => {
             const nw = n.width || 280;
-            const nh = n.collapsed ? 42 : 220;
+            const nh = n.collapsed ? 42 : (n.height || 220);
             const p  = toMM(n.x, n.y);
             const pw = nw * scale;
             const ph = nh * scale;

@@ -1,25 +1,18 @@
-function generateTabs(tableHtml) {
-    let buttonIndex = parseInt($('#buttonIndex').val());
-    if (isNaN(buttonIndex) || buttonIndex < 1) { buttonIndex = 1; $('#buttonIndex').val(1); }
-    if (buttonIndex > 100) { buttonIndex = 100; $('#buttonIndex').val(100); }
-
-    window.saveCurrentState();
-
-    // Parse input and find every <table> — each gets its own card
+// Card markup for every <table> in tableHtml: one accordion header plus a
+// panel holding the sp- tab strip and the table. Pure, so the all-sheets
+// canvas can build cards for a sheet that is not the one being shown.
+function buildTableCardsHtml(tableHtml, buttonIndex) {
     const $parsed = $('<div>').html(tableHtml);
     const $tables = $parsed.find('table');
-
-    if ($tables.length === 0) {
-        const cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(tableHtml, { ALLOW_DATA_ATTR: true }) : tableHtml;
-        $('#tableContainer')[0].innerHTML = cleanHtml;
-        setupTableInteraction();
-        return;
-    }
+    if ($tables.length === 0) return null;
 
     let blocksHtml = '';
-
     $tables.each(function (i) {
-        $(this).attr('data-table-ide-id', `t-${i}`);
+        // Keep an id the sheet manager already assigned (t-<sheet>). A
+        // positional t-<i> is only the fallback for a table with no sheet,
+        // because stamping by position is what made two sheets' first
+        // tables collide once they shared one canvas.
+        if (!$(this).attr('data-table-ide-id')) $(this).attr('data-table-ide-id', `t-${i}`);
 
         let spHtml = '<div class="sp-selector">\n';
         for (let j = 1; j <= buttonIndex; j++) {
@@ -33,8 +26,42 @@ function generateTabs(tableHtml) {
             `<button class="accordion active"><b>Table ${i + 1}</b></button>` +
             `<div class="panel">${spHtml}${tableOuterHtml}</div>`;
     });
+    return window.DOMPurify ? window.DOMPurify.sanitize(blocksHtml, { ALLOW_DATA_ATTR: true }) : blocksHtml;
+}
 
-    const cleanBlocks = window.DOMPurify ? window.DOMPurify.sanitize(blocksHtml, { ALLOW_DATA_ATTR: true }) : blocksHtml;
+function generateTabs(tableHtml) {
+    let buttonIndex = parseInt($('#buttonIndex').val());
+    if (isNaN(buttonIndex) || buttonIndex < 1) { buttonIndex = 1; $('#buttonIndex').val(1); }
+    if (buttonIndex > 100) { buttonIndex = 100; $('#buttonIndex').val(100); }
+
+    window.saveCurrentState();
+
+    // Stamp stable ids before building cards, so tables parsed straight into
+    // the view get the same t-<sheet> naming as tables loaded through addSheet.
+    if (typeof window.stampTableIds === 'function' && window.activeSheetId) {
+        const sheet = (window.sheets || []).find(s => s.id === window.activeSheetId);
+        if (sheet) tableHtml = window.stampTableIds(tableHtml, sheet);
+    }
+
+    const cleanBlocks = buildTableCardsHtml(tableHtml, buttonIndex);
+
+    // With every sheet mounted on the canvas, #tableContainer holds all of
+    // them, so replacing its innerHTML would wipe the other sheets. Swap only
+    // the active sheet's cards instead.
+    if (window.SheetCanvas && window.SheetCanvas.isMounted()) {
+        window.SheetCanvas.replaceSheetCards(window.activeSheetId, cleanBlocks || '');
+        setupTableInteraction();
+        return;
+    }
+
+    if (cleanBlocks === null) {
+        const cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(tableHtml, { ALLOW_DATA_ATTR: true }) : tableHtml;
+        $('#tableContainer')[0].innerHTML = cleanHtml;
+        setupTableInteraction();
+        return;
+    }
+
+    const $tables = $('<div>').html(cleanBlocks).find('table');
     $('#tableContainer')[0].innerHTML = cleanBlocks;
 
     setupTableInteraction();

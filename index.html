@@ -356,6 +356,7 @@
     <script src="src/js/features/nodeConfigPanel.js"></script>
     <script src="src/js/features/nodeExecutor.js"></script>
     <script src="src/js/features/nodeEditor.js"></script>
+    <script src="src/js/features/canvasGraph.js"></script>
     <!-- KaTeX ships as UMD, and Monaco's AMD loader (loader.min.js, above) has
          already defined `define.amd` by the time this runs. UMD then takes the
          AMD branch, calls define() anonymously, and the loader rejects it with
@@ -533,13 +534,14 @@
         <input
           type="file"
           id="fileInput"
+          multiple
           accept=".csv,.tsv,.txt,.html,.htm,.md,.json,.sql,.xlsx"
           style="display: none"
         />
         <button
           id="loadFileBtn"
           class="theme-toggle-btn"
-          title="Load file (.csv, .tsv, .txt, .html)"
+          title="Load files (.csv, .tsv, .txt, .html, .md, .json, .sql, .xlsx)"
         >
           <i class="fas fa-folder-open"></i>
         </button>
@@ -1011,58 +1013,6 @@
 
         <!-- Node Editor Canvas (shown when Node Editor mode is active) -->
         <div id="nodeEditorCanvas" class="node-editor-canvas">
-          <div class="node-editor-header">
-            <span><i class="fas fa-project-diagram"></i> Node Editor</span>
-            <div class="node-editor-header-actions">
-              <button
-                id="neAddFromSheet"
-                class="btn btn-sm btn-outline-primary"
-                title="Load current sheet as a node"
-              >
-                <i class="fas fa-plus"></i> Load Sheet
-              </button>
-              <button
-                id="neAddNode"
-                class="btn btn-sm btn-outline-secondary"
-                title="Add operator node"
-              >
-                <i class="fas fa-shapes"></i> Add Node ▾
-              </button>
-              <button
-                id="neRunGraph"
-                class="btn btn-sm btn-primary"
-                title="Run graph — execute all operator nodes"
-              >
-                <i class="fas fa-play"></i> Run
-              </button>
-              <button
-                id="neResetRun"
-                class="btn btn-sm btn-outline-warning"
-                title="Reset all node exec states back to idle (use if Run gets stuck)"
-              >
-                <i class="fas fa-undo"></i> Reset
-              </button>
-              <button
-                id="neBuildTable"
-                class="btn btn-sm btn-success"
-                title="Build table from selected node"
-              >
-                <i class="fas fa-table"></i> Build Table
-              </button>
-              <button
-                id="neFitView"
-                class="btn btn-sm btn-outline-secondary"
-                title="Fit all nodes into view"
-              >
-                <i class="fas fa-compress-arrows-alt"></i> Fit
-              </button>
-              <button id="neExit" class="btn btn-sm btn-outline-secondary">
-                Exit
-              </button>
-            </div>
-            <!-- Palette flyout: sibling of actions so overflow-x:auto on actions doesn't clip it -->
-            <div id="nePalette" class="ne-palette" style="display: none"></div>
-          </div>
           <div id="nodeEditorViewport">
             <!-- Visible composite canvas -->
             <canvas id="nodeCanvasLayer"></canvas>
@@ -1282,7 +1232,7 @@
                rides the scroll. Here it is outside the scroll container entirely and
                sits with the other view-level controls. -->
           <div class="tf-zoom-bar" id="tfZoomBar">
-            <button type="button" id="tfCanvasToggle" title="Toggle canvas layout">▦</button>
+            <button type="button" id="tfCanvasToggle" title="Canvas: tables and nodes"><i class="fas fa-project-diagram"></i></button>
             <button type="button" id="tfZoomOut" title="Zoom out (⌘−)">−</button>
             <span class="tf-zoom-level" id="tfZoomLevel" title="Click to reset to 100% (⌘0)">100%</span>
             <button type="button" id="tfZoomIn" title="Zoom in (⌘+)">+</button>
@@ -1372,6 +1322,63 @@
           </div>
         </div>
 
+        <!-- Node toolbar. Shown only while the canvas is on (body.tf-canvas-active):
+             tables and operator nodes share that canvas, so this is where nodes
+             are added, run, and combined. The old separate Node Editor view is
+             gone; #nodeEditorCanvas below only parks its canvases while off. -->
+        <div class="node-editor-header">
+            <span><i class="fas fa-project-diagram"></i> Nodes</span>
+            <div class="node-editor-header-actions">
+              <button
+                id="neCombine"
+                class="btn btn-sm btn-outline-primary"
+                title="Stack the selected tables into one Combined sheet (select two or more: drag a box around them, or Ctrl+A)"
+                disabled
+              >
+                <i class="fas fa-layer-group"></i> Combine
+              </button>
+              <button
+                id="neAddNode"
+                class="btn btn-sm btn-outline-secondary"
+                title="Add operator node"
+              >
+                <i class="fas fa-shapes"></i> Add Node ▾
+              </button>
+              <button
+                id="neRunGraph"
+                class="btn btn-sm btn-primary"
+                title="Run graph — execute all operator nodes"
+              >
+                <i class="fas fa-play"></i> Run
+              </button>
+              <button
+                id="neResetRun"
+                class="btn btn-sm btn-outline-warning"
+                title="Reset all node exec states back to idle (use if Run gets stuck)"
+              >
+                <i class="fas fa-undo"></i> Reset
+              </button>
+              <button
+                id="neBuildTable"
+                class="btn btn-sm btn-success"
+                title="Build table from selected node"
+              >
+                <i class="fas fa-table"></i> Build Table
+              </button>
+              <button
+                id="neFitView"
+                class="btn btn-sm btn-outline-secondary"
+                title="Fit all nodes into view"
+              >
+                <i class="fas fa-compress-arrows-alt"></i> Fit
+              </button>
+              <button id="neExit" class="btn btn-sm btn-outline-secondary" title="Leave the canvas">
+                Exit
+              </button>
+            </div>
+            <!-- Palette flyout: sibling of actions so overflow-x:auto on actions doesn't clip it -->
+            <div id="nePalette" class="ne-palette" style="display: none"></div>
+          </div>
         <!-- Table editing area -->
         <div class="table-wrapper">
           <!-- contenteditable="true" -->

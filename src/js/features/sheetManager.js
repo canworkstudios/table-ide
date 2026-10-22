@@ -6,6 +6,97 @@ window.sheets = [];
 window.activeSheetId = null;
 window._sheetCounter = 0;
 
+// ── Table ids ─────────────────────────────────────────────────────────────
+// Every table carries data-table-ide-id="t-<sheet>" (or t-<sheet>-<n> when a
+// sheet holds several). Undo history, the node editor, and the all-sheets
+// canvas all look tables up by this id, so it has to be unique across every
+// sheet, not only within one. It is assigned once and never re-derived from
+// position: renaming a sheet keeps its tables' ids, and so their history.
+
+function _tableIdSlug(name) {
+    const slug = String(name || '')
+        .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+    return slug || 'sheet';
+}
+
+// Ids in use anywhere: the live DOM plus every sheet's stored html, since a
+// sheet that is not mounted still owns its ids.
+function _usedTableIds(extraHtml) {
+    const used = new Set();
+    const scan = html => {
+        const re = /data-table-ide-id="([^"]*)"/g;
+        let m;
+        while ((m = re.exec(html || ''))) used.add(m[1]);
+    };
+    document.querySelectorAll('#tableContainer table[data-table-ide-id]').forEach(t => used.add(t.getAttribute('data-table-ide-id')));
+    (window.sheets || []).forEach(s => { scan(s.rawHtml); scan(s.containerHtml); });
+    scan(extraHtml);
+    return used;
+}
+
+function allocTableId(base, used) {
+    used = used || _usedTableIds();
+    let id = base, n = 2;
+    while (used.has(id)) id = `${base}-${n++}`;
+    used.add(id);
+    return id;
+}
+
+/**
+ * Give every table in html an id, keeping ids it already has unless another
+ * table already owns them. Returns the rewritten html.
+ */
+function stampTableIds(html, sheet) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html || '';
+    const tables = tmp.querySelectorAll('table');
+    if (!tables.length) return html;
+
+    // Ids elsewhere, not counting this sheet's own copies of these tables.
+    const own = new Set([...tables].map(t => t.getAttribute('data-table-ide-id')).filter(Boolean));
+    const used = _usedTableIds();
+    own.forEach(id => used.delete(id));
+
+    const base = 't-' + _tableIdSlug(sheet && sheet.name);
+    const seen = new Set();
+    tables.forEach((t, i) => {
+        const cur = t.getAttribute('data-table-ide-id');
+        // A positional t-<n> is the pre-unification scheme: every sheet had a
+        // t-0, so it is never safe to keep once sheets share a canvas.
+        if (cur && !/^t-\d+$/.test(cur) && !used.has(cur) && !seen.has(cur)) {
+            seen.add(cur);
+            return;
+        }
+        const id = allocTableId(tables.length > 1 ? `${base}-${i + 1}` : base, new Set([...used, ...seen]));
+        t.setAttribute('data-table-ide-id', id);
+        seen.add(id);
+    });
+    return tmp.innerHTML;
+}
+
+/**
+ * The current, edited html for a sheet. Mounted canvas cards win, then the
+ * live container for the active sheet, then the stored snapshot.
+ */
+function getSheetHtml(sheet) {
+    if (!sheet) return '';
+    if (window.SheetCanvas && window.SheetCanvas.isMounted()) {
+        const live = window.SheetCanvas.sheetHtml(sheet.id);
+        if (live != null) return live;
+    } else if (sheet.id === window.activeSheetId) {
+        const c = document.getElementById('tableContainer');
+        if (c && c.querySelector('table')) return c.innerHTML;
+    }
+    return sheet.containerHtml || sheet.rawHtml || '';
+}
+
+window.stampTableIds = stampTableIds;
+window.allocTableId  = allocTableId;
+window.tableIdSlug   = _tableIdSlug;
+window.getSheetHtml  = getSheetHtml;
+
 /**
  * Add a new sheet with the given name and raw table HTML.
  * Automatically switches to the new sheet.
@@ -18,6 +109,7 @@ function addSheet(name, rawHtml, meta) {
 
     const id = 'sheet-' + (++window._sheetCounter);
     const sheetName = name || ('Sheet ' + window._sheetCounter);
+    rawHtml = stampTableIds(rawHtml, { name: sheetName });
 
     window.sheets.push({
         id: id,
@@ -335,6 +427,22 @@ function switchSheet(id) {
 }
 
 /**
+ * Make a sheet active without moving the view. Used when the user clicks into
+ * a table on the all-sheets canvas: the table's sheet becomes the one the
+ * tabs, history and exports refer to, but the canvas stays where it is.
+ */
+function setActiveSheetQuiet(id) {
+    if (id === window.activeSheetId) return;
+    const sheet = window.sheets.find(s => s.id === id);
+    if (!sheet) return;
+    window.activeSheetId = id;
+    window.lastParsedHtml = sheet.rawHtml;
+    renderSheetTabs();
+    if (typeof window.syncHistoryButtons === 'function') window.syncHistoryButtons();
+}
+window.setActiveSheetQuiet = setActiveSheetQuiet;
+
+/**
  * Rename a sheet (called on dblclick).
  */
 function renameSheet(id, newName) {
@@ -358,6 +466,7 @@ function deleteSheet(id) {
 
     const wasActive = (id === window.activeSheetId);
     window.sheets.splice(idx, 1);
+    if (window.SheetCanvas && window.SheetCanvas.isMounted()) window.SheetCanvas.removeSheetCards(id);
 
     if (typeof window.clearSheetHistory === 'function') window.clearSheetHistory(id);
 
@@ -378,6 +487,11 @@ function deleteSheet(id) {
 // ──────────────────────────────────────────────
 
 function _saveActiveSheetState() {
+    // Every sheet is live on the canvas, so every sheet can have unsaved edits.
+    if (window.SheetCanvas && window.SheetCanvas.isMounted()) {
+        window.SheetCanvas.saveAll();
+        return;
+    }
     if (window.activeSheetId === null) return;
     const sheet = window.sheets.find(s => s.id === window.activeSheetId);
     if (sheet) {
@@ -391,6 +505,18 @@ function _activateSheet(id) {
 
     window.activeSheetId = id;
     window.lastParsedHtml = sheet.rawHtml;
+
+    // All sheets are already on the canvas: nothing to swap in, just point
+    // the view at this one. A sheet added while mounted has no cards yet and
+    // gets them here.
+    if (window.SheetCanvas && window.SheetCanvas.isMounted()) {
+        window.SheetCanvas.ensureSheetCards(id);
+        window.currentTable = window.SheetCanvas.firstTable(id) || null;
+        renderSheetTabs();
+        window.SheetCanvas.focusSheet(id);
+        if (typeof window.syncHistoryButtons === 'function') window.syncHistoryButtons();
+        return;
+    }
 
     if (sheet.containerHtml) {
         // Restore previously saved container state
@@ -415,6 +541,9 @@ function _activateSheet(id) {
  * Re-render the sheet tab bar DOM.
  */
 function renderSheetTabs() {
+    // Frames carry the sheet name and the active highlight.
+    if (window.SheetCanvas && window.SheetCanvas.isMounted()) window.SheetCanvas.renderFrames();
+
     let $bar = $('#sheetTabBar');
     if (!$bar.length) return;
 

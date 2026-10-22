@@ -161,7 +161,7 @@ Deliberately framework-free. The core engine ships as a single file, self-hostab
 ## Self-hosting
 
 ```bash
-git clone https://github.com/carnworkstudios/table-ide
+git clone https://github.com/canworkstudios/table-ide
 cd Table IDE
 # Open index.html in any browser. No server required.
 ```
@@ -172,7 +172,7 @@ cd Table IDE
 
 MIT licensed. Core engine is free forever.  
 The AI extraction layer (PDF → structured data → Table IDE) is the commercial product.  
-[Sponsor on GitHub](https://github.com/carnworkstudios) to support development.
+[Sponsor on GitHub](https://github.com/canworkstudios) to support development.
 
 ---
 

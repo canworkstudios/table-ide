@@ -22,7 +22,12 @@ function _getSlot(key) {
 }
 
 function _currentKey() {
-    const sheetId = window.activeSheetId ?? 'default';
+    // On the all-sheets canvas the table's own sheet is authoritative; the
+    // active sheet only follows clicks, and a programmatic selection can land
+    // on a table in another sheet.
+    const own = window.currentTable && window.currentTable.closest
+        ? window.currentTable.closest('[data-sheet-id]') : null;
+    const sheetId = (own && own.dataset.sheetId) || (window.activeSheetId ?? 'default');
     const tableId = window.currentTable
         ? ($(window.currentTable).attr('data-table-ide-id') ?? 'default')
         : 'default';

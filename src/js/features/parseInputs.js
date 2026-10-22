@@ -79,96 +79,93 @@ function parseInput() {
 }
 
 /**
- * Handle a file selected via the Load button.
- * Auto-detects format from extension and parses into a new sheet.
+ * Parse one file into table HTML, picking the parser from its extension.
+ * Resolves to '' when nothing table-shaped came out of it.
  */
-function handleFileLoad(file) {
-    if (!file) return;
-
+function _parseFileToTable(file) {
     const ext = file.name.split('.').pop().toLowerCase();
-    const reader = new FileReader();
 
-    // .xlsx is a binary ZIP — read as ArrayBuffer and hand to the OOXML
-    // reader. Everything else stays on the text path.
+    // .xlsx is a binary ZIP, so it goes to the OOXML reader as bytes.
+    // Everything else stays on the text path.
     if (ext === 'xlsx') {
-        reader.onload = function (e) {
-            const buffer = e.target.result;
-            parseXlsxInput(buffer)
-                .then(function (tableHtml) {
-                    if (!tableHtml) {
-                        alert('Could not parse file: ' + file.name);
-                        return;
-                    }
-                    const sheetName = file.name.replace(/\.[^/.]+$/, '');
-                    if (typeof addSheet === 'function') {
-                        addSheet(sheetName, tableHtml);
-                    } else {
-                        window.lastParsedHtml = tableHtml;
-                        generateTabs(tableHtml);
-                        window.currentTable = $('#tableContainer table')[0];
-                        initializeAllFeatures();
-                        setupTableInteraction();
-                        window.saveCurrentState();
-                    }
-                    $.toast({ heading: 'Loaded', text: 'Loaded: ' + file.name, icon: 'success', loader: false, stack: false });
-                })
-                .catch(function (err) {
-                    console.error('XLSX parse failed:', err);
-                    alert('Could not parse .xlsx file: ' + file.name);
-                });
-        };
-        reader.readAsArrayBuffer(file);
-        return;
+        return file.arrayBuffer().then(parseXlsxInput);
     }
 
-    reader.onload = function (e) {
-        const text = e.target.result;
-        let tableHtml = '';
+    return file.text().then(function (text) {
+        if (ext === 'html' || ext === 'htm') return parseHtmlInput(text);
+        if (ext === 'csv') return parseCsvInput(text);
+        if (ext === 'tsv') return parseTextInput(text);
+        if (ext === 'md') return parseMarkdownInput(text);
+        if (ext === 'json') return parseJsonInput(text);
+        if (ext === 'sql') return parseSqlInput(text);
+        // .txt and others; try tab-delimited first
+        if (text.includes('\t')) return parseTextInput(text);
+        if (text.includes(',')) return parseCsvInput(text);
+        return parseTextInput(text);
+    });
+}
 
-        if (ext === 'html' || ext === 'htm') {
-            tableHtml = parseHtmlInput(text);
-        } else if (ext === 'csv') {
-            tableHtml = parseCsvInput(text);
-        } else if (ext === 'tsv') {
-            tableHtml = parseTextInput(text);
-        } else if (ext === 'md') {
-            tableHtml = parseMarkdownInput(text);
-        } else if (ext === 'json') {
-            tableHtml = parseJsonInput(text);
-        } else if (ext === 'sql') {
-            tableHtml = parseSqlInput(text);
-        } else {
-            // .txt and others; try tab-delimited first
-            if (text.includes('\t')) {
-                tableHtml = parseTextInput(text);
-            } else if (text.includes(',')) {
-                tableHtml = parseCsvInput(text);
-            } else {
-                tableHtml = parseTextInput(text);
-            }
+function _addLoadedSheet(file, tableHtml) {
+    const sheetName = file.name.replace(/\.[^/.]+$/, ''); // strip extension
+    if (typeof addSheet === 'function') {
+        addSheet(sheetName, tableHtml);
+    } else {
+        window.lastParsedHtml = tableHtml;
+        generateTabs(tableHtml);
+        window.currentTable = $('#tableContainer table')[0];
+        initializeAllFeatures();
+        setupTableInteraction();
+        window.saveCurrentState();
+    }
+}
+
+/**
+ * Handle files selected via the Load button. Each file becomes its own sheet.
+ *
+ * Files load one at a time, in the order they were picked. Reading them in
+ * parallel would add sheets in whichever order the reads happened to finish.
+ * A file that fails to parse is skipped and reported once at the end, so one
+ * bad file in a batch of ten doesn't stop the other nine.
+ */
+function handleFilesLoad(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return Promise.resolve();
+
+    const loaded = [];
+    const failed = [];
+
+    return files.reduce(function (chain, file) {
+        return chain.then(function () {
+            return _parseFileToTable(file)
+                .then(function (tableHtml) {
+                    if (!tableHtml) {
+                        failed.push(file.name);
+                        return;
+                    }
+                    _addLoadedSheet(file, tableHtml);
+                    loaded.push(file.name);
+                })
+                .catch(function (err) {
+                    console.error('File parse failed:', file.name, err);
+                    failed.push(file.name);
+                });
+        });
+    }, Promise.resolve()).then(function () {
+        if (loaded.length) {
+            const text = loaded.length === 1
+                ? 'Loaded: ' + loaded[0]
+                : 'Loaded ' + loaded.length + ' files as sheets';
+            $.toast({ heading: 'Loaded', text: text, icon: 'success', loader: false, stack: false });
         }
-
-        if (!tableHtml) {
-            alert('Could not parse file: ' + file.name);
-            return;
+        if (failed.length) {
+            alert('Could not parse ' + (failed.length === 1 ? 'file' : 'files') + ': ' + failed.join(', '));
         }
+    });
+}
 
-        const sheetName = file.name.replace(/\.[^/.]+$/, ''); // strip extension
-        if (typeof addSheet === 'function') {
-            addSheet(sheetName, tableHtml);
-        } else {
-            window.lastParsedHtml = tableHtml;
-            generateTabs(tableHtml);
-            window.currentTable = $('#tableContainer table')[0];
-            initializeAllFeatures();
-            setupTableInteraction();
-            window.saveCurrentState();
-        }
-
-        $.toast({ heading: 'Loaded', text: 'Loaded: ' + file.name, icon: 'success', loader: false, stack: false });
-    };
-
-    reader.readAsText(file);
+/** Single-file entry point, kept for existing callers. */
+function handleFileLoad(file) {
+    return handleFilesLoad(file ? [file] : []);
 }
 
 function parseHtmlInput(html) {

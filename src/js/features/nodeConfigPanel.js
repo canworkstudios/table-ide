@@ -10,6 +10,8 @@ window.nodeConfigPanel = (function () {
     // ── Public ─────────────────────────────────────────────────────────────────
 
     function open(nodeId) {
+        // Source columns come from the live tables, so refresh them first.
+        if (window.CanvasGraph) window.CanvasGraph.syncTableNodes();
         const node = window.NodeGraph.nodes[nodeId];
         if (!node) return;
 
@@ -38,7 +40,7 @@ window.nodeConfigPanel = (function () {
         // Click outside closes
         document.addEventListener('pointerdown', function (e) {
             if (_currentNodeId && panel.style.display !== 'none' && !panel.contains(e.target)) {
-                const nodeEl = e.target.closest('.ne-node');
+                const nodeEl = e.target.closest('[data-node-id]');
                 const configBtn = e.target.closest('.ne-node-config-btn');
                 if (!nodeEl && !configBtn) close();
             }
@@ -62,7 +64,7 @@ window.nodeConfigPanel = (function () {
             </div>`;
 
         const body = panel.querySelector('#neConfigBody');
-        const renderers = { filter: _renderFilter, condition: _renderCondition, vlookup: _renderVlookup, formula: _renderFormula, join: _renderJoin, diff: _renderDiff, api: _renderApi };
+        const renderers = { filter: _renderFilter, condition: _renderCondition, vlookup: _renderVlookup, formula: _renderFormula, join: _renderJoin, diff: _renderDiff, api: _renderApi, append: _renderAppend };
         const renderer  = renderers[node.nodeType];
         if (renderer) renderer(body, node);
         else body.innerHTML = '<p style="color:var(--t-text-muted);padding:12px;">No configuration for this node type.</p>';
@@ -77,6 +79,31 @@ window.nodeConfigPanel = (function () {
         body.addEventListener('input',  () => _updateSchemaPreview(body, node));
 
         window.GxPointer.onPress(panel.querySelector('#neConfigSave'), () => _save(node));
+    }
+
+    // ── Append config ──────────────────────────────────────────────────────────
+
+    function _appendSources(node) {
+        return Object.values(window.NodeGraph.wires)
+            .filter(w => w.targetNodeId === node.id && w.targetPortId === 'append-in')
+            .map(w => window.NodeGraph.nodes[w.sourceNodeId])
+            .filter(Boolean);
+    }
+
+    function _renderAppend(body, node) {
+        const srcs = _appendSources(node);
+        const on = node.config?.sourceColumn !== false;
+        body.innerHTML = `
+            <div class="ne-config-field">
+                <label>Tables, in stacking order</label>
+                ${srcs.length
+                    ? `<ol class="ne-config-list">${srcs.map(s => `<li>${_esc(s.label)}</li>`).join('')}</ol>`
+                    : '<div class="ne-config-hint">Nothing connected yet.</div>'}
+                <div class="ne-config-hint">Order follows the order the wires were connected.</div>
+            </div>
+            <div class="ne-config-field">
+                <label><input type="checkbox" id="cfgAppendSource" ${on ? 'checked' : ''}> Add a Source column naming each row's table</label>
+            </div>`;
     }
 
     // ── Filter config ──────────────────────────────────────────────────────────
@@ -445,6 +472,11 @@ window.nodeConfigPanel = (function () {
             case 'join':
                 node.config = { mode: get('cfgJoinMode') || 'stack', leftKey: get('cfgJoinLeftKey'), rightKey: get('cfgJoinRightKey') };
                 break;
+            case 'append': {
+                const cb = panel.querySelector('#cfgAppendSource');
+                node.config = { sourceColumn: !!(cb && cb.checked) };
+                break;
+            }
             case 'diff':
                 node.config = { keyColumn: get('cfgDiffKey') };
                 break;
@@ -506,6 +538,16 @@ window.nodeConfigPanel = (function () {
             case 'api':
                 note = 'Columns are determined by the API response at run time.';
                 break;
+            case 'append': {
+                const labels = [];
+                _appendSources(node).forEach(s => s.headers.filter(h => h.direction !== 'in')
+                    .forEach(h => { if (!labels.includes(h.label)) labels.push(h.label); }));
+                const cb = body.querySelector('#cfgAppendSource');
+                const withSource = cb ? cb.checked : node.config?.sourceColumn !== false;
+                cols = withSource ? [labels.includes('Source') ? 'Source Table' : 'Source', ...labels] : labels;
+                note = 'Rows from every table, one after another. A table missing a column gets blanks there.';
+                break;
+            }
         }
 
         if (!cols && !note) { box.innerHTML = ''; return; }
